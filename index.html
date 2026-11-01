@@ -1506,6 +1506,25 @@ body{
     padding:10px 12px;font-size:11.5px;color:#5f5952;line-height:1.75;
     white-space:pre-wrap;word-break:break-word;margin-bottom:12px;
 }
+
+.np-run{font-size:13px;color:#3a9e5f;padding:2px 0 8px;font-weight:600;}
+.np-link{color:#2f7fe0;text-decoration:underline;cursor:pointer;}
+.np-hint{font-size:12px;color:#999;line-height:1.6;padding:6px 2px 10px;}
+.iosg-mask{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;opacity:0;pointer-events:none;transition:opacity .2s;display:flex;align-items:flex-end;}
+.iosg-mask.show{opacity:1;pointer-events:auto;}
+.iosg-box{width:100%;max-height:82vh;overflow-y:auto;background:#fff;border-radius:20px 20px 0 0;padding:18px 16px 14px;box-shadow:0 -6px 24px rgba(0,0,0,.12);transform:translateY(12px);transition:transform .2s;}
+.iosg-mask.show .iosg-box{transform:translateY(0);}
+.iosg-title{font-size:17px;font-weight:700;display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;}
+.iosg-x{color:#bbb;font-size:20px;line-height:1;padding:0 4px;cursor:pointer;background:none;border:none;}
+.iosg-tip{background:#f7f7f9;border-radius:12px;padding:12px 14px;font-size:13px;line-height:1.65;color:#444;margin-bottom:12px;}
+.iosg-step{background:#fafafa;border-radius:12px;padding:12px 14px;margin-bottom:10px;}
+.iosg-step b{display:block;font-size:14px;margin-bottom:6px;color:#222;}
+.iosg-step p{font-size:13px;line-height:1.65;color:#555;margin:0;}
+.iosg-note{background:#fff8ef;border-radius:12px;padding:12px 14px;font-size:13px;line-height:1.65;color:#8a5a00;}
+.iosg-acts{display:flex;gap:10px;margin-top:12px;}
+.iosg-acts button{flex:1;padding:13px 0;border-radius:14px;font-size:15px;border:none;cursor:pointer;}
+.iosg-ghost{background:#fff;border:1px solid #ddd !important;color:#333;}
+.iosg-main{background:#1c1c1e;color:#fff;}
 </style>
 </head>
 <body class="font-size-small">
@@ -2246,7 +2265,7 @@ body{
     var NOTIFY_BADGE = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22%3E%3Crect width=%2224%22 height=%2224%22 rx=%226%22 fill=%22%23ffb6c1%22/%3E%3C/svg%3E';
 
     var notifyCfg = {
-        keepAlive: true, quietChannel: true, systemNotify: true
+        keepAlive: true, quietChannel: true, systemNotify: true, screenOn: true
     };
     try {
         var _nc = JSON.parse(localStorage.getItem(NCFG_KEY) || '{}') || {};
@@ -2513,7 +2532,214 @@ body{
         } catch (e) {}
     }
 
-    
+    // ====== 云端推送（Cloudflare Pages Functions + Web Push）======
+    // 页面被系统冻结/回收时，由服务器按“预排程”发出 Web Push，SW 取明细后逐条弹通知
+    var PUSH_API = 'https://zayun.pages.dev/api';
+    var VAPID_PUBLIC = 'jaBD7Gyp-jwQCwJcKZsbWMyRxewMpr7fZnjB5rd6f3UTn9lvKDi5S7p7aNuQkCT6PcTEVj-bjPOKcagZoR1pjA';
+    var PUSH_SUB_KEY = 'zayu_push_ep_v1';
+    var PUSH_SEEN_KEY = 'zayu_push_seen_v1';
+    var PUSH_SYNC_KEY = 'zayu_push_sync_v1';
+    var PUSH_PLAN_MIN = 30;
+
+    function b64urlToBytes(s) {
+        s = String(s || '').replace(/-/g, '+').replace(/_/g, '/');
+        while (s.length % 4) s += '=';
+        var raw = atob(s);
+        var out = new Uint8Array(raw.length);
+        for (var i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+        return out;
+    }
+
+    var Push = {
+        endpoint: '', sub: null, ready: false, status: '未启用',
+        seen: {}, seenList: [], lastSync: 0, _busy: false, _lastAlive: 0,
+
+        supported: function () {
+            try { return !!(isSecureCtx() && 'serviceWorker' in navigator && 'PushManager' in window); }
+            catch (e) { return false; }
+        },
+        api: function (path, opts) {
+            opts = opts || {};
+            return fetch(PUSH_API + path, {
+                method: opts.method || 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: opts.body ? JSON.stringify(opts.body) : undefined,
+                cache: 'no-store'
+            }).then(function (r) { return r.json(); });
+        },
+
+        subscribe: function () {
+            var self = this;
+            if (self._busy) return Promise.resolve(false);
+            if (!self.supported()) { self.status = '不支持（需 HTTPS + 浏览器推送）'; return Promise.resolve(false); }
+            if (notifPermission() !== 'granted') { self.status = '未授权通知'; return Promise.resolve(false); }
+            self._busy = true;
+            self.status = '订阅中…';
+            return navigator.serviceWorker.ready.then(function (reg) {
+                return reg.pushManager.getSubscription().then(function (sub) {
+                    if (sub) return sub;
+                    return reg.pushManager.subscribe({
+                        userVisibleOnly: true,
+                        applicationServerKey: b64urlToBytes(VAPID_PUBLIC)
+                    });
+                });
+            }).then(function (sub) {
+                self.sub = sub;
+                self.endpoint = sub.endpoint;
+                try { localStorage.setItem(PUSH_SUB_KEY, sub.endpoint); } catch (e) {}
+                var keys = {};
+                try { keys = (sub.toJSON && sub.toJSON().keys) || {}; } catch (e) {}
+                return self.api('/sub', { body: { subscription: { endpoint: sub.endpoint, keys: keys } } });
+            }).then(function () {
+                self._busy = false;
+                self.ready = true;
+                self.status = '已开启';
+                self.uploadPlan();
+                self.alive();
+                self.syncLog();
+                try { refreshNotifyPanel(); } catch (e) {}
+                return true;
+            }).catch(function (err) {
+                self._busy = false;
+                self.ready = false;
+                self.status = '订阅失败：' + ((err && err.message) || '未知');
+                try { refreshNotifyPanel(); } catch (e) {}
+                return false;
+            });
+        },
+
+        // 预排程：把接下来 30 分钟要发的消息提前交给服务器
+        buildPlan: function () {
+            var now = Date.now();
+            var name = (typeof partnerInfo !== 'undefined' && partnerInfo && partnerInfo.name) ? partnerInfo.name : 'Zayu';
+            var items = [];
+            for (var m = 1; m <= PUSH_PLAN_MIN; m++) {
+                var at = now + m * 60000;
+                var txt = '';
+                try { txt = getRandomCardMessage() || ''; } catch (e) {}
+                if (!txt) txt = '在吗？';
+                items.push({
+                    id: 'p' + at + '-' + Math.random().toString(36).slice(2, 6),
+                    at: at,
+                    title: name,
+                    body: txt,
+                    kind: 'msg'
+                });
+            }
+            return items;
+        },
+        uploadPlan: function () {
+            var self = this;
+            if (!self.endpoint) return;
+            self.api('/plan', { body: { endpoint: self.endpoint, items: self.buildPlan() } }).catch(function () {});
+        },
+        alive: function () {
+            var self = this;
+            if (!self.endpoint) return;
+            if (Date.now() - self._lastAlive < 30000) return;
+            self._lastAlive = Date.now();
+            self.api('/alive', { body: { endpoint: self.endpoint } }).catch(function () {});
+        },
+
+        markSeen: function (id) {
+            if (!id || this.seen[id]) return;
+            this.seen[id] = 1;
+            this.seenList.push(id);
+            this.pruneSeen();
+        },
+        pruneSeen: function () {
+            if (this.seenList.length <= 300) return;
+            var drop = this.seenList.splice(0, this.seenList.length - 300);
+            for (var i = 0; i < drop.length; i++) delete this.seen[drop[i]];
+        },
+        saveSeen: function () {
+            try { localStorage.setItem(PUSH_SEEN_KEY, JSON.stringify(this.seenList.slice(-300))); } catch (e) {}
+        },
+
+        // 打开页面时把“冻结期间服务器推过的消息”回填进聊天记录，保证内容对得上
+        syncLog: function () {
+            var self = this;
+            if (!self.endpoint) return;
+            var since = self.lastSync || (Date.now() - 6 * 3600 * 1000);
+            self.api('/log?endpoint=' + encodeURIComponent(self.endpoint) + '&since=' + since, { method: 'GET' })
+                .then(function (j) {
+                    var items = (j && j.items) || [];
+                    var added = 0;
+                    items.forEach(function (it) {
+                        if (!it || !it.id || self.seen[it.id]) return;
+                        self.markSeen(it.id);
+                        if (!it.pushed) return;
+                        var msg = {
+                            id: msgId++, type: 'text', text: String(it.body || ''),
+                            isPartner: true, time: it.at || Date.now(), read: true,
+                            replyId: null, proactive: true, fromPush: true
+                        };
+                        messages.push(msg);
+                        try { appendMessage(msg); } catch (e) {}
+                        added++;
+                    });
+                    self.saveSeen();
+                    if (added) {
+                        try { saveData(); } catch (e) {}
+                        try { scrollBottom(); } catch (e) {}
+                    }
+                    self.lastSync = Date.now();
+                    try { localStorage.setItem(PUSH_SYNC_KEY, String(self.lastSync)); } catch (e) {}
+                }).catch(function () {});
+        },
+
+        test: function () {
+            var self = this;
+            if (!self.endpoint) {
+                self.subscribe().then(function (ok) {
+                    if (!ok) { showToast('推送未就绪：' + Push.status); return; }
+                    self.test();
+                });
+                return;
+            }
+            showToast('正在发送服务器推送…');
+            self.api('/ping', { body: { endpoint: self.endpoint } }).then(function (j) {
+                if (j && j.ok) showToast('已发送，1–5 秒内应弹出通知');
+                else showToast('发送失败，订阅可能已失效');
+            }).catch(function () { showToast('网络错误，稍后再试'); });
+        },
+
+        init: function () {
+            var self = this;
+            try { self.endpoint = localStorage.getItem(PUSH_SUB_KEY) || ''; } catch (e) {}
+            try {
+                var arr = JSON.parse(localStorage.getItem(PUSH_SEEN_KEY) || '[]') || [];
+                if (arr.length) {
+                    arr.forEach(function (id) { self.seen[id] = 1; });
+                    self.seenList = arr;
+                }
+            } catch (e) {}
+            try {
+                var ls = Number(localStorage.getItem(PUSH_SYNC_KEY) || 0);
+                if (ls > 0 && ls < Date.now() + 3600000) self.lastSync = ls;
+            } catch (e) {}
+
+            if (!self.supported()) { self.status = '当前环境不支持'; return; }
+
+            setTimeout(function () {
+                if (notifPermission() === 'granted' && notifyCfg.systemNotify) self.subscribe();
+                else if (self.endpoint) self.ready = true;
+            }, 1200);
+
+            setInterval(function () { self.alive(); }, 45000);
+            setInterval(function () { if (self.endpoint) self.uploadPlan(); }, 5 * 60000);
+
+            document.addEventListener('visibilitychange', function () {
+                self.alive();
+                if (document.hidden) return;
+                if (self.endpoint) { self.uploadPlan(); self.syncLog(); }
+            });
+
+            window.addEventListener('online', function () {
+                if (self.endpoint) { self.uploadPlan(); self.syncLog(); }
+            });
+        }
+    };
 
     var AndroidBridge = {
         available: function() { return typeof window.AndroidInterface !== 'undefined'; },
@@ -2569,9 +2795,15 @@ body{
         if (callState === 'incoming') rejectCall();
     };
 
+    function isIOSWeb() {
+        var ua = navigator.userAgent || '';
+        if (/iPad|iPhone|iPod/.test(ua)) return true;
+        return /Macintosh/.test(ua) && ('ontouchend' in document);
+    }
+
     // ====== 后台保活（近无声音频，防冻结）======
     var KeepAlive = {
-        audio: null, url: null, hideAt: 0, lastAlive: 0, maxAlive: 0, terminations: 0,
+        audio: null, url: null, since: 0, hideAt: 0, lastAlive: 0, maxAlive: 0, terminations: 0,
         _lastBeat: 0, unlocked: false,
         wav: function () {
             if (this.url) return this.url;
@@ -2591,39 +2823,96 @@ body{
         },
         make: function () {
             if (this.audio) return this.audio;
+            var self = this;
             try {
-                var u = this.wav();
-                if (!u) return null;
-                this.audio = new Audio(u);
-                this.audio.loop = true;
-                this.audio.preload = 'auto';
-                this.audio.volume = notifyCfg.quietChannel ? 0.0001 : 0.03;
+                var a = new Audio();
+                a.loop = true;
+                a.preload = 'auto';
+                a.setAttribute('playsinline', '');
+                if (isIOSWeb()) {
+                    // iOS/iPadOS：必须是一条“真实的、有长度的”媒体曲目，系统才认作后台播放
+                    a.volume = 1;
+                    a.src = './keepalive.mp3';
+                    a.addEventListener('error', function () {
+                        try {
+                            var u = self.wav();
+                            if (u && self.audio) { self.audio.loop = true; self.audio.src = u; }
+                        } catch (e) {}
+                    });
+                } else {
+                    // 安卓：沿用原来的近无声音频，不占声道、不干扰其它 App
+                    var u2 = this.wav();
+                    if (!u2) return null;
+                    a.src = u2;
+                    a.volume = notifyCfg.quietChannel ? 0.0001 : 0.03;
+                }
+                a.addEventListener('pause', function () {
+                    if (!notifyCfg.keepAlive || self._stopping || self.userPaused) return;
+                    setTimeout(function () {
+                        if (notifyCfg.keepAlive && !self._stopping && !self.userPaused && self.audio && self.audio.paused) self.start();
+                    }, 600);
+                });
+                this.audio = a;
+                this.setupMedia();
             } catch (e) { this.audio = null; }
             return this.audio;
+        },
+        setupMedia: function () {
+            try {
+                if (!('mediaSession' in navigator) || typeof MediaMetadata === 'undefined') return;
+                navigator.mediaSession.metadata = new MediaMetadata({
+                    title: 'Zayu 运行中',
+                    artist: '后台保活中',
+                    album: '消息 · 来电 · 陪伴',
+                    artwork: [{ src: './icon-512.png', sizes: '512x512', type: 'image/png' }]
+                });
+                navigator.mediaSession.playbackState = 'playing';
+                var self = this;
+                navigator.mediaSession.setActionHandler('pause', function () {
+                    self.userPaused = true;
+                    try { self.audio.pause(); } catch (e) {}
+                    navigator.mediaSession.playbackState = 'paused';
+                });
+                navigator.mediaSession.setActionHandler('play', function () {
+                    self.userPaused = false;
+                    self.start();
+                });
+            } catch (e) {}
         },
         start: function () {
             if (!notifyCfg.keepAlive) return;
             var a = this.make();
             if (!a) return;
+            if (!this.since) this.since = Date.now();
             try {
                 var p = a.play();
                 if (p && p.catch) p.catch(function () {});
+                this.setupMedia();
             } catch (e) {}
         },
         stop: function () {
+            this._stopping = true;
             try { if (this.audio) this.audio.pause(); } catch (e) {}
+            this._stopping = false;
         },
         running: function () { return !!(this.audio && !this.audio.paused); },
         // 首次触摸解锁自动播放权限（解锁后立刻暂停，前台不放声）
         unlock: function () {
+            // 首次触摸就让它开始播放并保持（曲目是静音，无声），媒体会话建立后
+            // iOS 才允许页面在后台继续播放，这是不被冻结的关键
             var a = this.make();
-            if (!a || this.unlocked) return;
+            if (!a) return;
+            var self = this;
             try {
+                if (!notifyCfg.keepAlive) { this.unlocked = true; return; }
+                if (!this.since) this.since = Date.now();
                 var p = a.play();
                 if (p && p.then) {
-                    p.then(function () { try { a.pause(); } catch (e) {} }).catch(function () {});
+                    p.then(function () { self.unlocked = true; }).catch(function () {});
+                } else {
                     this.unlocked = true;
                 }
+                this.setupMedia();
             } catch (e) {}
         },
         test: function () {
@@ -2638,8 +2927,40 @@ body{
         }
     };
 
+    // ====== 屏幕常亮（Wake Lock，配合保活降低被冻结概率）======
+    var WakeLock = {
+        sentinel: null,
+        supported: function () { return 'wakeLock' in navigator; },
+        request: function () {
+            if (!notifyCfg.screenOn) return;
+            if (!this.supported()) return;
+            var self = this;
+            if (this.sentinel) return;
+            try {
+                navigator.wakeLock.request('screen').then(function (s) {
+                    self.sentinel = s;
+                    try { s.addEventListener('release', function () { self.sentinel = null; }); } catch (e) {}
+                    try { refreshNotifyPanel(); } catch (e) {}
+                }).catch(function () {});
+            } catch (e) {}
+        },
+        release: function () {
+            try { if (this.sentinel) this.sentinel.release(); } catch (e) {}
+            this.sentinel = null;
+        },
+        active: function () { return !!this.sentinel; }
+    };
+
+    function fmtDur(sec) {
+        var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), r = sec % 60;
+        var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+        return pad(h) + ':' + pad(m) + ':' + pad(r);
+    }
+
     function initNotifySystem() {
         initServiceWorker();
+        try { Push.init(); } catch (e) {}
+        setTimeout(function () { try { tryCloudRestore(); } catch (e) {} }, 3000);
         try { fitViewport(); } catch (e) {}
 
         // 通知栏上的「接听 / 挂断」按钮通过 Service Worker 回传
@@ -2661,7 +2982,15 @@ body{
         document.addEventListener('pointerdown', function once() {
             document.removeEventListener('pointerdown', once);
             KeepAlive.unlock();
+            WakeLock.request();
         });
+
+        // 设置页打开时，每秒刷新"已保活"计时
+        setInterval(function () {
+            try {
+                if (notifyPanelEl && notifyPanelEl.classList.contains('show')) refreshNotifyPanel();
+            } catch (e) {}
+        }, 1000);
 
         // 切后台接上保活，回前台停止省电，并补跑错过的调度
         document.addEventListener('visibilitychange', function () {
@@ -2671,7 +3000,8 @@ body{
                     if (notifyCfg.keepAlive) KeepAlive.start();
                 } else {
                     KeepAlive.hideAt = 0;
-                    KeepAlive.stop();
+                    KeepAlive.start();
+                    WakeLock.request();
                     if (typeof proactiveTick === 'function') proactiveTick();
                     try { refreshNotifyPanel(); } catch (e) {}
                 }
@@ -2681,10 +3011,8 @@ body{
         // 看门狗：后台音频被系统中断时自动重连，并把 SW 叫醒
         setInterval(function () {
             try {
-                if (document.hidden) {
-                    if (notifyCfg.keepAlive && !KeepAlive.running()) KeepAlive.start();
-                    if (swReady && swReady.active) swReady.active.postMessage({ type: 'heartbeat' });
-                }
+                if (notifyCfg.keepAlive && !KeepAlive.running()) KeepAlive.start();
+                if (swReady && swReady.active) swReady.active.postMessage({ type: 'heartbeat' });
             } catch (e) {}
         }, 10000);
 
@@ -2720,6 +3048,7 @@ body{
             if (notifyCfg.systemNotify && notifPermission() === 'default') {
                 requestNotifPermission(function (ok) {
                     showToast(ok ? '消息通知已开启' : '未授权：请在浏览器设置中允许本站通知');
+                    if (ok) { try { Push.subscribe(); } catch (e) {} }
                 });
             }
         });
@@ -2740,6 +3069,40 @@ body{
         return '<div class="np-row"><div class="np-txt"><div class="t">' + title + '</div><div class="d">' + desc + '</div></div><button type="button" class="np-mini" id="' + btnId + '">' + btnText + '</button></div>';
     }
 
+    function openIosGuide() {
+        var m = document.getElementById('iosGuideMask');
+        if (!m) {
+            m = document.createElement('div');
+            m.id = 'iosGuideMask';
+            m.className = 'iosg-mask';
+            m.innerHTML = [
+                '<div class="iosg-box">',
+                '  <div class="iosg-title"><span>🍎 iOS 后台通知设置教程</span><button type="button" class="iosg-x" id="iosgX">×</button></div>',
+                '  <div class="iosg-tip">✨ 核心目标：iOS 系统默认会在网页切后台后暂停运行。按以下步骤把 Zayu 添加到主屏幕并开启推送，即可像 App 一样挂在后台稳定收消息，尽量不被冻结。</div>',
+                '  <div class="iosg-step"><b>① 系统版本要求</b><p>请确保系统版本为 16.4 或更高。16.4 以下不支持 PWA 网页推送通知。</p></div>',
+                '  <div class="iosg-step"><b>② 使用 Safari 添加到主屏幕</b><p>用 Safari 打开本站，点击底部分享按钮，选择「添加到主屏幕」，然后点右上角「添加」。</p></div>',
+                '  <div class="iosg-step"><b>③ 从主屏幕图标打开 Zayu</b><p>返回桌面，点击刚添加的 Zayu 图标启动（此时为独立 PWA 模式，不是浏览器标签页）。</p></div>',
+                '  <div class="iosg-step"><b>④ 开启后台推送通知</b><p>进入本设置页，打开「接收对方消息推送」开关。首次开启会弹出系统授权，请点击「允许」。若之前拒绝过，请前往系统「设置 → 通知 → Zayu」手动打开。</p></div>',
+                '  <div class="iosg-step"><b>⑤ 保持后台运行，不要上滑关闭</b><p>使用完毕后直接按 Home 键或切换到其他 App 即可，千万不要从 App 切换器上滑关闭 Zayu。同时建议开启「保持网站在后台运行」开关，进一步增强保活能力。</p></div>',
+                '  <div class="iosg-note">💡 小提示：只要从主屏幕图标打开并保持在后台，对方发消息、来电时系统就会弹出通知。系统在长时间挂起后仍可能回收页面，开启「保持网站在后台运行」可明显延长存活时间。</div>',
+                '  <div class="iosg-acts"><button type="button" class="iosg-ghost" id="iosgTest">测试推送一条</button><button type="button" class="iosg-main" id="iosgOk">我知道了</button></div>',
+                '</div>'
+            ].join('');
+            document.body.appendChild(m);
+            m.addEventListener('click', function (e) { if (e.target === m) closeIosGuide(); });
+            m.querySelector('#iosgX').addEventListener('click', closeIosGuide);
+            m.querySelector('#iosgOk').addEventListener('click', closeIosGuide);
+            m.querySelector('#iosgTest').addEventListener('click', function () {
+                pushNotify({ title: 'Zayu · 测试推送', body: '这是一条测试通知，推送功能正常', emoji: '💬', kind: 'msg', tag: 'zayu-test-' + Date.now() });
+            });
+        }
+        m.classList.add('show');
+    }
+    function closeIosGuide() {
+        var m = document.getElementById('iosGuideMask');
+        if (m) m.classList.remove('show');
+    }
+
     function buildNotifyPanel() {
         if (notifyPanelEl && document.body.contains(notifyPanelEl)) return;
         notifyPanelEl = document.createElement('div');
@@ -2754,16 +3117,17 @@ body{
             '<div class="np-body">',
             '  <div class="np-sec">后台保活</div>',
             '  <div class="np-card">',
-            npToggleRow('npKeep', '开启后台保活', '默认已开启。切后台时持续播放近无声音频防冻结，消息即时到达；默认走静音通道，不压低你在听的其他 App 声音；回前台自动补跑错过的调度'),
+            npToggleRow('npScreen', '保持网站在后台运行', '开启后会请求屏幕常亮，并循环播放一段 5 分钟静音曲，让系统认为页面正在播放媒体，显著降低浏览器被冻结/杀死的概率；建议配合「添加到主屏幕」使用'),
+            '    <div class="np-run" id="npRun">运行中 · 已保活 00:00:00</div>',
+            npToggleRow('npKeep', '静音音频保活', '切后台时持续播放近无声音频防冻结，消息即时到达；回前台自动补跑错过的调度'),
             npToggleRow('npQuiet', '不抢其他 App 的声音', '保活音频走静音通道，不压低你在听的音乐/视频音量'),
-            npBtnRow('保活音频', '默认为静音音频，不会发出声音', '默认静音音频', 'npAudio'),
             '    <div class="np-actions"><button type="button" class="np-btn" id="npTestKeep">保活测试</button></div>',
             '    <div class="np-status" id="npKeepStatus"></div>',
             '  </div>',
-            '  <div class="np-sec">系统通知</div>',
+            '  <div class="np-sec">后台推送通知</div>',
             '  <div class="np-card">',
-            npToggleRow('npSys', '开启系统通知', '前台、后台、锁屏收到每一条新消息都会单独弹一条状态栏通知，不合并；消息通知静音，没有声音'),
-            '    <div class="np-actions"><button type="button" class="np-btn" id="npTestNotif">通知测试</button></div>',
+            npToggleRow('npSys', '接收对方消息推送', '开启后，对方回复、主动发消息、来电时都会弹出通知。<a class="np-link" id="npIosGuide">iOS 用户请查看通知设置教程</a>'),
+            '    <div class="np-actions"><button type="button" class="np-btn" id="npTestNotif">测试推送</button><button type="button" class="np-btn" id="npTestServer">服务器推送测试</button></div>',
             '    <div class="np-status" id="npNotifStatus"></div>',
             '  </div>',
             '</div>'
@@ -2783,6 +3147,15 @@ body{
                 refreshNotifyPanel();
             });
         }
+        bindToggle('npScreen', 'screenOn', function () {
+            if (notifyCfg.screenOn) {
+                WakeLock.request();
+                showToast(WakeLock.active() ? '屏幕常亮已开启' : '已开启（部分浏览器不支持常亮）');
+            } else {
+                WakeLock.release();
+                showToast('屏幕常亮已关闭');
+            }
+        });
         bindToggle('npKeep', 'keepAlive', function () {
             if (!notifyCfg.keepAlive) KeepAlive.stop();
             showToast(notifyCfg.keepAlive ? '后台保活已开启，切后台会持续接上' : '后台保活已关闭');
@@ -2794,15 +3167,21 @@ body{
             if (notifyCfg.systemNotify) {
                 requestNotifPermission(function (ok) {
                     showToast(ok ? '系统通知已开启' : '未授权：请在浏览器设置中允许本站通知');
+                    if (ok) { try { Push.subscribe(); } catch (e) {} }
                 });
             }
         });
-        notifyPanelEl.querySelector('#npAudio').addEventListener('click', function () {
-            showToast('当前使用默认静音音频');
+        notifyPanelEl.querySelector('#npIosGuide').addEventListener('click', function (e) {
+            e.stopPropagation();
+            openIosGuide();
         });
         notifyPanelEl.querySelector('#npTestKeep').addEventListener('click', function () {
             KeepAlive.test();
             setTimeout(refreshNotifyPanel, 500);
+        });
+        notifyPanelEl.querySelector('#npTestServer').addEventListener('click', function () {
+            try { Push.test(); } catch (e) {}
+            setTimeout(refreshNotifyPanel, 1200);
         });
         notifyPanelEl.querySelector('#npTestNotif').addEventListener('click', function () {
             if (!notifyCfg.systemNotify) { showToast('请先开启系统通知'); return; }
@@ -2838,7 +3217,20 @@ body{
         var sum = q('npSum');
         if (sum) sum.textContent = '保活 ' + (notifyCfg.keepAlive ? '开' : '关') + ' · 通知 ' + (notifyCfg.systemNotify ? '开' : '关');
 
-        var audioState = KeepAlive.running() ? '近无声音频播放中' : (document.hidden ? '未接上' : '前台不放声（省电）');
+        var runEl = q('npRun');
+        if (runEl) {
+            if (notifyCfg.keepAlive || notifyCfg.screenOn) {
+                if (!KeepAlive.since) KeepAlive.since = Date.now();
+                var sec = Math.floor((Date.now() - KeepAlive.since) / 1000);
+                runEl.textContent = '运行中 · 已保活 ' + fmtDur(sec);
+                runEl.style.color = '#3a9e5f';
+            } else {
+                KeepAlive.since = 0;
+                runEl.textContent = '未开启 · 建议开启以提高后台存活率';
+                runEl.style.color = '#b98a2a';
+            }
+        }
+        var audioState = KeepAlive.running() ? '5 分钟静音曲循环播放中' : '未接上';
         var ks = q('npKeepStatus');
         if (ks) {
             ks.textContent =
@@ -2857,6 +3249,7 @@ body{
             ns.textContent =
                 '权限：' + permText + '\n' +
                 'Service Worker：' + swState + '\n' +
+                '云端推送：' + (Push.ready ? '已订阅（页面被冻结时由服务器兜底推送）' : Push.status) + '\n' +
                 '安全环境：' + (isSecureCtx() ? '是（可发系统通知）' : '否（本地文件/HTTP 无法发系统通知）');
         }
     }
@@ -3011,6 +3404,7 @@ body{
     function saveData() {
         if (saveTimer) clearTimeout(saveTimer);
         markDirtyAndMaybeSaveNative();
+        try { scheduleFullSave(); } catch (e) {}
         saveTimer = setTimeout(function() {
             try {
                 localStorage.setItem('jrsy_chat_v7', JSON.stringify(chatSnapshot()));
@@ -3027,6 +3421,7 @@ body{
             localStorage.setItem('jrsy_chat_v7', JSON.stringify(chatSnapshot()));
         } catch(e) {}
         persistNativeNow();
+        try { doFullSave(); } catch (e) {}
     }
 
     function loadData() {
@@ -3073,6 +3468,155 @@ body{
         renderMessages();
         if (backgroundUrl) applyBackground(backgroundUrl);
         if (bubbleStyle) applyBubbleStyle(bubbleStyle);
+    }
+
+    // ====== 浏览器数据安全：IndexedDB 全量存档 + 每日滚动快照 + 云端备份 ======
+    var IDB_NAME = 'zayu_store', IDB_VER = 1, _idb = null;
+    function idbOpen() {
+        if (_idb) return _idb;
+        _idb = new Promise(function (resolve, reject) {
+            try {
+                if (!window.indexedDB) { reject(new Error('no idb')); return; }
+                var req = indexedDB.open(IDB_NAME, IDB_VER);
+                req.onupgradeneeded = function (ev) {
+                    var db = ev.target.result;
+                    if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
+                    if (!db.objectStoreNames.contains('snap')) db.createObjectStore('snap');
+                };
+                req.onsuccess = function () { resolve(req.result); };
+                req.onerror = function () { reject(req.error); };
+            } catch (e) { reject(e); }
+        });
+        return _idb;
+    }
+    function idbPut(store, key, val) {
+        return idbOpen().then(function (db) {
+            return new Promise(function (resolve, reject) {
+                var tx = db.transaction(store, 'readwrite');
+                tx.objectStore(store).put(val, key);
+                tx.oncomplete = function () { resolve(true); };
+                tx.onerror = function () { reject(tx.error); };
+            });
+        });
+    }
+    function idbGet(store, key) {
+        return idbOpen().then(function (db) {
+            return new Promise(function (resolve) {
+                var tx = db.transaction(store, 'readonly');
+                var rq = tx.objectStore(store).get(key);
+                rq.onsuccess = function () { resolve(rq.result || null); };
+                rq.onerror = function () { resolve(null); };
+            });
+        }).catch(function () { return null; });
+    }
+
+    var fullSaveTimer = null;
+    function scheduleFullSave() {
+        if (fullSaveTimer) return;
+        fullSaveTimer = setTimeout(function () {
+            fullSaveTimer = null;
+            doFullSave();
+        }, 8000);
+    }
+    function doFullSave() {
+        var payload = { savedAt: Date.now(), chat: chatSnapshot(true) };
+        try { payload.ext = extSnapshot(); } catch (e) {}
+        idbPut('kv', 'chat_full', payload).catch(function () {});
+        // 每天一份滚动快照，保留最近 7 份
+        try {
+            var now = new Date();
+            var dayKey = now.getFullYear() + '-' + (now.getMonth() + 1) + '-' + now.getDate();
+            if (localStorage.getItem('zayu_snap_day') !== dayKey) {
+                localStorage.setItem('zayu_snap_day', dayKey);
+                idbPut('snap', dayKey, payload).catch(function () {});
+                pruneSnapshots();
+            }
+        } catch (e) {}
+        cloudBackup(false);
+    }
+    function pruneSnapshots() {
+        idbOpen().then(function (db) {
+            var tx = db.transaction('snap', 'readwrite');
+            var st = tx.objectStore('snap');
+            var rq = st.getAllKeys();
+            rq.onsuccess = function () {
+                var keys = (rq.result || []).sort();
+                var extra = keys.length - 7;
+                for (var i = 0; i < extra; i++) st.delete(keys[i]);
+            };
+        }).catch(function () {});
+    }
+
+    // 云端备份（每天一次，换手机/清缓存后可恢复）
+    function cloudBackup(force) {
+        try {
+            if (!Push.endpoint) return;
+            var last = Number(localStorage.getItem('zayu_backup_at') || 0);
+            if (!force && Date.now() - last < 24 * 3600 * 1000) return;
+            var payload = JSON.stringify({ chat: chatSnapshot(true), ext: extSnapshot(), at: Date.now() });
+            Push.api('/backup', { body: { endpoint: Push.endpoint, data: payload } }).then(function (j) {
+                if (j && j.ok) {
+                    try { localStorage.setItem('zayu_backup_at', String(Date.now())); } catch (e) {}
+                }
+            }).catch(function () {});
+        } catch (e) {}
+    }
+
+    // 把一份完整存档应用到内存 + 界面
+    function applyFullSnapshot(rec) {
+        if (!rec || !rec.chat) return false;
+        var d = rec.chat;
+        try {
+            messages = d.messages || [];
+            msgId = d.msgId || (messages.length + 1);
+            selfInfo = d.selfInfo || selfInfo;
+            partnerInfo = d.partnerInfo || partnerInfo;
+            wordCardGroups = d.wordCardGroups || wordCardGroups;
+            currentGroup = d.currentGroup || currentGroup;
+            backgroundUrl = d.backgroundUrl || backgroundUrl;
+            bubbleStyle = d.bubbleStyle || bubbleStyle;
+            if (rec.ext && typeof rec.ext === 'object') {
+                try {
+                    localStorage.setItem(EXT_KEY, JSON.stringify(rec.ext));
+                    loadExt();
+                } catch (e) {}
+            }
+            updateHeaderUI();
+            renderMessages();
+            if (backgroundUrl) applyBackground(backgroundUrl);
+            if (bubbleStyle) applyBubbleStyle(bubbleStyle);
+            try { renderWater(); } catch (e) {}
+            return true;
+        } catch (e) { return false; }
+    }
+
+    // 启动时：localStorage 只有最近 500 条，若 IndexedDB 里有更全的就补齐
+    function hydrateFromIDB() {
+        idbGet('kv', 'chat_full').then(function (rec) {
+            if (!rec || !rec.chat || !rec.chat.messages) return;
+            if (rec.chat.messages.length <= messages.length) {
+                // 本地比快照还新，顺手覆盖成最新
+                return;
+            }
+            if (applyFullSnapshot(rec)) {
+                try { saveDataImmediate(); } catch (e) {}
+            }
+        });
+    }
+
+    // 本地完全没数据时，尝试从云端备份恢复
+    function tryCloudRestore() {
+        if (messages.length) return;
+        try { if (!Push.endpoint) return; } catch (e) { return; }
+        Push.api('/backup?endpoint=' + encodeURIComponent(Push.endpoint), { method: 'GET' })
+            .then(function (j) {
+                if (!j || !j.data) return;
+                var rec = JSON.parse(j.data);
+                if (applyFullSnapshot(rec)) {
+                    try { saveDataImmediate(); } catch (e) {}
+                    showToast('已从云端备份恢复聊天记录');
+                }
+            }).catch(function () {});
     }
 
     // ====== 消息渲染（虚拟列表 + 增量渲染）======
@@ -7458,6 +8002,7 @@ body{
     function init() {
         cacheDOM();
         loadData();
+        try { hydrateFromIDB(); } catch (e) {}
         loadExt();
         setupEventDelegation();
         bindEvents();
