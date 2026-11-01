@@ -1113,7 +1113,7 @@ body{
 .msg-sticker-img{max-width:120px;max-height:120px;border-radius:12px;display:block;}
 /* 主动消息标记：贴在表情包 / 语音字卡左上角 */
 .proactive-badge{
-    position:absolute;top:-8px;left:-8px;width:20px;height:20px;
+    position:absolute;top:-8px;left:-8px;width:22px;height:22px;
     display:flex;align-items:center;justify-content:center;
     font-size:13px;line-height:1;border-radius:50%;
     background:#fff;box-shadow:0 1px 5px rgba(255,150,170,0.35);
@@ -3768,7 +3768,7 @@ body{
     // ====== 消息渲染（虚拟列表 + 增量渲染）======
     // 主动消息标记：蓝色空心星（描边蓝、内部不填充）
     function starSVG(px) {
-        return '<svg viewBox="0 0 24 24" width="' + px + '" height="' + px + '" fill="none" stroke="#2f7fe0" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" style="vertical-align:-2px;">' +
+        return '<svg viewBox="0 0 24 24" width="' + px + '" height="' + px + '" fill="none" stroke="#7fb8f2" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" style="vertical-align:-2px;">' +
             '<path d="M12 3.4l2.7 5.5 6 .9-4.35 4.2 1.03 5.98L12 17.2l-5.38 2.83 1.03-5.98L3.3 9.8l6-.9z"/></svg>';
     }
     function starSpan(px) {
@@ -3856,7 +3856,7 @@ body{
             if (msg.proactive && msg.isPartner) {
                 var sb = document.createElement('span');
                 sb.className = 'proactive-badge';
-                sb.innerHTML = starSVG(13);
+                sb.innerHTML = starSVG(15);
                 bubble.appendChild(sb);
             }
         } else if (msg.type === 'voice' && msg.voice) {
@@ -3880,7 +3880,7 @@ body{
             if (msg.proactive && msg.isPartner) {
                 var vb = document.createElement('span');
                 vb.className = 'proactive-badge';
-                vb.innerHTML = starSVG(13);
+                vb.innerHTML = starSVG(15);
                 bubble.appendChild(vb);
             }
         } else if (msg.type === 'poll' && msg.poll) {
@@ -3941,7 +3941,7 @@ body{
             // 主动发来的文字消息前面加蓝色空心星，回复消息不加
             var textSpan = document.createElement('span');
             if (msg.proactive) {
-                bubble.appendChild(starSpan(12));
+                bubble.appendChild(starSpan(13.5));
                 bubble.appendChild(document.createTextNode('\u00a0'));
             }
             textSpan.textContent = msg.text;
