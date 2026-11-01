@@ -2677,7 +2677,7 @@ body{
         alive: function () {
             var self = this;
             if (!self.endpoint) return;
-            if (Date.now() - self._lastAlive < 30000) return;
+            if (Date.now() - self._lastAlive < 50000) return;
             self._lastAlive = Date.now();
             self.api('/alive', { body: { endpoint: self.endpoint } }).catch(function () {});
         },
@@ -2775,7 +2775,7 @@ body{
                 else if (self.endpoint) self.ready = true;
             }, 1200);
 
-            setInterval(function () { self.alive(); }, 45000);
+            setInterval(function () { self.alive(); }, 75000);
             setInterval(function () { if (self.endpoint) self.uploadPlan(); }, 5 * 60000);
 
             document.addEventListener('visibilitychange', function () {
