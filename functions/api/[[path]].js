@@ -156,3 +156,58 @@ export async function onRequest(context) {
     return json({ error: String((e && e.message) || e) }, 500);
   }
 }
+
+// 定时任务：检查所有订阅者的预排程，到点且页面已不在线时发 Web Push
+async function runDue(env) {
+  const now = Date.now();
+  let cursor = undefined;
+
+  do {
+    const page = await env.PUSH_KV.list({ prefix: 's:', cursor });
+    for (const key of page.keys) {
+      const k = key.name.slice(2);
+      const plan = await getJSON(env.PUSH_KV, 'p:' + k, []);
+      if (!plan.length) continue;
+
+      const due = plan.filter((i) => i && i.at <= now);
+      if (!due.length) continue;
+
+      const rest = plan.filter((i) => i && i.at > now);
+      await env.PUSH_KV.put('p:' + k, JSON.stringify(rest));
+
+      // 页面还活着（120 秒内有心跳）：它自己会弹通知，服务端直接跳过，避免重复
+      const aliveRaw = await env.PUSH_KV.get('a:' + k);
+      const alive = aliveRaw ? Number(aliveRaw) : 0;
+      if (alive && now - alive < 120000) continue;
+
+      const sub = await getJSON(env.PUSH_KV, 's:' + k, null);
+      if (!sub) continue;
+
+      const pushed = due.map((i) => ({
+        id: i.id || ('x' + i.at),
+        at: i.at,
+        title: i.title || 'Zayu',
+        body: i.body || '',
+        kind: i.kind || 'msg',
+        pushed: true,
+      }));
+
+      // 明细进日志（客户端打开页面时按 id 回填聊天记录），同时放进 pending 给 SW 取
+      const log = await getJSON(env.PUSH_KV, 'l:' + k, []);
+      await env.PUSH_KV.put('l:' + k, JSON.stringify(log.concat(pushed).slice(-200)));
+
+      const pending = await getJSON(env.PUSH_KV, 'd:' + k, []);
+      await env.PUSH_KV.put('d:' + k, JSON.stringify(pending.concat(pushed).slice(-50)), { expirationTtl: 3600 });
+
+      try {
+        const status = await sendPush(env, sub.endpoint);
+        if (status === 404 || status === 410) {
+          // 订阅已失效（用户卸载/重置），清理掉，避免一直报错
+          await env.PUSH_KV.delete('s:' + k);
+          await env.PUSH_KV.delete('p:' + k);
+        }
+      } catch (e) {}
+    }
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+}
