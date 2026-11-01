@@ -2651,6 +2651,8 @@ body{
 
         // 预排程：把接下来 3 小时要发的消息提前交给服务器
         buildPlan: function () {
+            // 主动发消息关掉时，云端不留任何预排程，保证对方不会主动私信过来
+            if (typeof proactiveEnabled !== 'undefined' && !proactiveEnabled) return [];
             var now = Date.now();
             var name = (typeof partnerInfo !== 'undefined' && partnerInfo && partnerInfo.name) ? partnerInfo.name : 'Zayu';
             var items = [];
@@ -2685,6 +2687,12 @@ body{
         // 默认 5 分钟 = 从任务栏划掉后很快就彻底安静；
         // 打开「划掉后仍接收推送」= 3 小时，覆盖刷抖音/看视频被系统挂起的情况
         graceMs: function () { return notifyCfg.keepAfterKill ? PUSH_PLAN_MIN * 60000 : 5 * 60000; },
+        // 放宽/收紧「多久没心跳算已关闭」，两者都只写一次 KV
+        setGrace: function (ms) {
+            var self = this;
+            if (!self.endpoint) return;
+            self.api('/grace', { body: { endpoint: self.endpoint, ms: ms } }).catch(function () {});
+        },
 
         markSeen: function (id) {
             if (!id || this.seen[id]) return;
@@ -2785,6 +2793,7 @@ body{
             document.addEventListener('visibilitychange', function () {
                 self.alive();
                 if (document.hidden) return;
+                try { self.setGrace(self.graceMs()); } catch (e) {}
                 if (self.endpoint) { self.uploadPlan(); self.syncLog(); }
             });
 
@@ -2901,6 +2910,9 @@ body{
                 }
                 a.addEventListener('pause', function () {
                     if (!notifyCfg.keepAlive || self._stopping || self.userPaused) return;
+                    // 在后台被别的 App（抖音/视频）抢走音频：页面虽然还活着但可能马上被挂起，
+                    // 这时放宽云端判定，保证这段时间对方发消息仍能推到这台设备
+                    if (document.hidden) { try { Push.setGrace(PUSH_PLAN_MIN * 60000); } catch (e) {} }
                     setTimeout(function () {
                         if (notifyCfg.keepAlive && !self._stopping && !self.userPaused && self.audio && self.audio.paused) self.start();
                     }, 600);
@@ -3181,7 +3193,7 @@ body{
             '  <div class="np-card">',
             npToggleRow('npSys', '接收对方消息推送', '开启后，对方回复、主动发消息、来电时都会弹出通知。<a class="np-link" id="npIosGuide">iOS 用户请查看通知设置教程</a>'),
             '    <div class="np-actions"><button type="button" class="np-btn" id="npTestNotif">测试推送</button><button type="button" class="np-btn" id="npTestServer">服务器推送测试</button></div>',
-            npToggleRow('npStopKill', '划掉应用后仍接收推送', '默认关闭：从任务栏划掉约 5 分钟后彻底安静，不再有任何主动消息。打开后 = 3 小时内继续由云端兜底（适合长时间刷抖音/看视频，页面被系统挂起时仍能收通知）'),
+            npToggleRow('npStopKill', '划掉应用后仍接收推送', '默认：从任务栏划掉约 5 分钟后彻底安静；切后台时若音频被抖音/视频抢走，会自动放宽到 3 小时继续云端兜底。打开此开关 = 划掉后也强制保留 3 小时'),
             '    <div class="np-status" id="npNotifStatus"></div>',
             '  </div>',
             '  <div class="np-sec">数据与备份</div>',
@@ -7398,6 +7410,7 @@ body{
             var sw = DOM.dropdownMenu.querySelector('.menu-switch');
             if (sw) sw.classList.toggle('on', proactiveEnabled);
             showToast(proactiveEnabled ? '已开启：对方每分钟主动发消息' : '已关闭：对方不再主动发消息');
+            try { if (typeof Push !== 'undefined' && Push.endpoint) Push.uploadPlan(); } catch (e) {}
         }));
         DOM.dropdownMenu.appendChild(createMenuTitle('背景设置'));
         DOM.dropdownMenu.appendChild(createMenuItem('fas fa-upload', '上传背景', function() {
