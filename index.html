@@ -2265,7 +2265,7 @@ body{
     var NOTIFY_BADGE = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22%3E%3Crect width=%2224%22 height=%2224%22 rx=%226%22 fill=%22%23ffb6c1%22/%3E%3C/svg%3E';
 
     var notifyCfg = {
-        keepAlive: true, quietChannel: true, systemNotify: true, screenOn: true, keepAfterKill: false
+        keepAlive: true, quietChannel: true, systemNotify: true, screenOn: true
     };
     try {
         var _nc = JSON.parse(localStorage.getItem(NCFG_KEY) || '{}') || {};
@@ -2683,10 +2683,9 @@ body{
             self._lastAlive = Date.now();
             self.api('/alive', { body: { endpoint: self.endpoint } }).catch(function () {});
         },
-        // 告诉服务器：页面多久没有心跳算「已关闭」。
-        // 默认 5 分钟 = 从任务栏划掉后很快就彻底安静；
-        // 打开「划掉后仍接收推送」= 3 小时，覆盖刷抖音/看视频被系统挂起的情况
-        graceMs: function () { return notifyCfg.keepAfterKill ? PUSH_PLAN_MIN * 60000 : 5 * 60000; },
+        // 页面多久没有心跳算「已关闭」：默认 5 分钟（划掉应用后很快彻底安静）；
+        // 音频被抖音/视频抢走时会自动放宽到 3 小时（见 KeepAlive 的 pause 处理）
+        graceMs: function () { return 5 * 60000; },
         // 放宽/收紧「多久没心跳算已关闭」，两者都只写一次 KV
         setGrace: function (ms) {
             var self = this;
@@ -3193,7 +3192,6 @@ body{
             '  <div class="np-card">',
             npToggleRow('npSys', '接收对方消息推送', '开启后，对方回复、主动发消息、来电时都会弹出通知。<a class="np-link" id="npIosGuide">iOS 用户请查看通知设置教程</a>'),
             '    <div class="np-actions"><button type="button" class="np-btn" id="npTestNotif">测试推送</button><button type="button" class="np-btn" id="npTestServer">服务器推送测试</button></div>',
-            npToggleRow('npStopKill', '划掉应用后仍接收推送', '默认：从任务栏划掉约 5 分钟后彻底安静；切后台时若音频被抖音/视频抢走，会自动放宽到 3 小时继续云端兜底。打开此开关 = 划掉后也强制保留 3 小时'),
             '    <div class="np-status" id="npNotifStatus"></div>',
             '  </div>',
             '  <div class="np-sec">数据与备份</div>',
@@ -3234,10 +3232,6 @@ body{
         });
         bindToggle('npQuiet', 'quietChannel', function () {
             if (KeepAlive.audio) KeepAlive.audio.volume = notifyCfg.quietChannel ? 0.0001 : 0.03;
-        });
-        bindToggle('npStopKill', 'keepAfterKill', function () {
-            try { Push.uploadPlan(); } catch (e) {}
-            showToast(notifyCfg.keepAfterKill ? '已开启：划掉后 3 小时内仍由云端兜底' : '已关闭：划掉约 5 分钟后停止所有推送');
         });
         bindToggle('npSys', 'systemNotify', function () {
             if (notifyCfg.systemNotify) {
@@ -3326,7 +3320,6 @@ body{
         on('npKeep', notifyCfg.keepAlive);
         on('npQuiet', notifyCfg.quietChannel);
         on('npSys', notifyCfg.systemNotify);
-        on('npStopKill', notifyCfg.keepAfterKill);
         var chip = q('npChip');
         if (chip) chip.textContent = document.hidden ? '● 后台保活中' : '● 前台省电中';
         var sum = q('npSum');
