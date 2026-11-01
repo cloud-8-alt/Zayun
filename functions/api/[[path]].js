@@ -146,6 +146,16 @@ export async function onRequest(context) {
       return json({ ok: true });
     }
 
+    if (path === '/grace' && request.method === 'POST') {
+      const b = await request.json();
+      if (!b.endpoint) return json({ error: 'endpoint required' }, 400);
+      const k = await keyOf(b.endpoint);
+      const g = String(Math.max(120000, Math.min(Number(b.ms) || 0, 24 * 3600000)));
+      const prev = await env.PUSH_KV.get('g:' + k);
+      if (prev !== g) await env.PUSH_KV.put('g:' + k, g, { expirationTtl: 60 * 60 * 24 * 30 });
+      return json({ ok: true, grace: Number(g) });
+    }
+
     if (path === '/pending' && request.method === 'GET') {
       const ep = url.searchParams.get('endpoint');
       if (!ep) return json({ error: 'endpoint required' }, 400);
