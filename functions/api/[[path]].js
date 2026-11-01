@@ -161,16 +161,20 @@ export async function onRequest(context) {
 
     if (path === '/backup' && request.method === 'POST') {
       const b = await request.json();
-      if (!b.endpoint || !b.data) return json({ error: 'endpoint/data required' }, 400);
-      const k = await keyOf(b.endpoint);
-      await env.PUSH_KV.put('b:' + k, JSON.stringify({ at: Date.now(), data: b.data }), { expirationTtl: 60 * 60 * 24 * 365 });
-      return json({ ok: true, size: b.data.length });
+      if (!b.data || (!b.endpoint && !b.code)) return json({ error: 'endpoint/code/data required' }, 400);
+      const rec = JSON.stringify({ at: Date.now(), data: b.data });
+      const keys = [];
+      if (b.endpoint) keys.push('b:' + await keyOf(b.endpoint));
+      if (b.code) keys.push('b:' + await keyOf('code:' + String(b.code)));
+      await Promise.all(keys.map((k) => env.PUSH_KV.put(k, rec, { expirationTtl: 60 * 60 * 24 * 730 })));
+      return json({ ok: true, size: b.data.length, keys: keys.length });
     }
 
     if (path === '/backup' && request.method === 'GET') {
       const ep = url.searchParams.get('endpoint');
-      if (!ep) return json({ error: 'endpoint required' }, 400);
-      const k = await keyOf(ep);
+      const code = url.searchParams.get('code');
+      if (!ep && !code) return json({ error: 'endpoint or code required' }, 400);
+      const k = await keyOf(ep ? ep : ('code:' + code));
       const rec = await getJSON(env.PUSH_KV, 'b:' + k, null);
       if (!rec) return json({ error: 'not found' }, 404);
       return json(rec);
