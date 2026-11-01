@@ -43,17 +43,26 @@ self.addEventListener('push', (event) => {
     for (const it of items) {
       const title = String(it.title || 'Zayu');
       const body = String(it.body || '');
-      const isCall = it.kind === 'call';
+      const kind = it.kind || 'msg';
+      const isCall = kind === 'call';
+      // 来电 / 陪伴 / 听歌：常驻通知，不处理就一直挂着
+      const sticky = isCall || kind === 'companion' || kind === 'music';
       const opts = {
         body,
         icon: NOTIFY_ICON,
         badge: NOTIFY_ICON,
-        silent: !isCall,
+        silent: !sticky,
         renotify: true,
-        requireInteraction: isCall,
+        requireInteraction: sticky,
         tag: 'zayu-push-' + (it.id || (it.at || Date.now()) + '-' + Math.random().toString(36).slice(2, 6)),
-        data: { kind: it.kind || 'msg', url: './', entryId: it.id || '' },
+        data: { kind: kind, url: './', entryId: it.id || '' },
       };
+      if (isCall && self.Notification && self.Notification.prototype && 'actions' in self.Notification.prototype) {
+        opts.actions = [
+          { action: 'accept', title: '接听' },
+          { action: 'reject', title: '挂断' },
+        ];
+      }
       try { await self.registration.showNotification(title, opts); } catch (_) {}
     }
   })());
@@ -67,10 +76,10 @@ self.addEventListener('notificationclick', (e) => {
   e.waitUntil((async () => {
     const list = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
 
-    // 来电通知上的「接听 / 挂断」
-    if (data.kind === 'call' && (e.action === 'accept' || e.action === 'reject')) {
+    // 来电通知上的「接听 / 挂断」，以及直接点通知（打开全屏来电页）
+    if (data.kind === 'call') {
       for (const c of list) {
-        try { c.postMessage({ type: 'call-action', action: e.action }); } catch (_) {}
+        try { c.postMessage({ type: 'cloud-call', action: e.action || 'open' }); } catch (_) {}
       }
       for (const c of list) {
         if ('focus' in c) { try { await c.focus(); } catch (_) {} break; }
