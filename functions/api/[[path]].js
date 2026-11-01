@@ -83,7 +83,7 @@ export async function onRequest(context) {
       const sub = b.subscription;
       if (!sub || !sub.endpoint) return json({ error: 'endpoint required' }, 400);
       const k = await keyOf(sub.endpoint);
-      await env.PUSH_KV.put('s:' + k, JSON.stringify({ endpoint: sub.endpoint, keys: sub.keys || {}, at: Date.now() }));
+      await env.PUSH_KV.put('s:' + k, JSON.stringify({ endpoint: sub.endpoint, keys: sub.keys || {}, at: Date.now() }), { expirationTtl: 60 * 60 * 24 * 365 });
       return json({ ok: true, key: k });
     }
 
@@ -99,7 +99,7 @@ export async function onRequest(context) {
       if (!b.endpoint) return json({ error: 'endpoint required' }, 400);
       const k = await keyOf(b.endpoint);
       const items = (b.items || []).filter((i) => i && i.at).slice(0, 200);
-      await env.PUSH_KV.put('p:' + k, JSON.stringify(items));
+      await env.PUSH_KV.put('p:' + k, JSON.stringify(items), { expirationTtl: 60 * 60 * 24 * 7 });
       return json({ ok: true, count: items.length });
     }
 
@@ -107,7 +107,7 @@ export async function onRequest(context) {
       const b = await request.json();
       if (!b.endpoint) return json({ error: 'endpoint required' }, 400);
       const k = await keyOf(b.endpoint);
-      await env.PUSH_KV.put('a:' + k, String(Date.now()));
+      await env.PUSH_KV.put('a:' + k, String(Date.now()), { expirationTtl: 600 });
       return json({ ok: true });
     }
 
@@ -133,7 +133,7 @@ export async function onRequest(context) {
       const b = await request.json();
       if (!b.endpoint || !b.data) return json({ error: 'endpoint/data required' }, 400);
       const k = await keyOf(b.endpoint);
-      await env.PUSH_KV.put('b:' + k, JSON.stringify({ at: Date.now(), data: b.data }));
+      await env.PUSH_KV.put('b:' + k, JSON.stringify({ at: Date.now(), data: b.data }), { expirationTtl: 60 * 60 * 24 * 365 });
       return json({ ok: true, size: b.data.length });
     }
 
@@ -173,7 +173,7 @@ async function runDue(env) {
       if (!due.length) continue;
 
       const rest = plan.filter((i) => i && i.at > now);
-      await env.PUSH_KV.put('p:' + k, JSON.stringify(rest));
+      await env.PUSH_KV.put('p:' + k, JSON.stringify(rest), { expirationTtl: 60 * 60 * 24 * 7 });
 
       // 页面还活着（120 秒内有心跳）：它自己会弹通知，服务端直接跳过，避免重复
       const aliveRaw = await env.PUSH_KV.get('a:' + k);
@@ -194,7 +194,7 @@ async function runDue(env) {
 
       // 明细进日志（客户端打开页面时按 id 回填聊天记录），同时放进 pending 给 SW 取
       const log = await getJSON(env.PUSH_KV, 'l:' + k, []);
-      await env.PUSH_KV.put('l:' + k, JSON.stringify(log.concat(pushed).slice(-200)));
+      await env.PUSH_KV.put('l:' + k, JSON.stringify(log.concat(pushed).slice(-200)), { expirationTtl: 60 * 60 * 24 * 30 });
 
       const pending = await getJSON(env.PUSH_KV, 'd:' + k, []);
       await env.PUSH_KV.put('d:' + k, JSON.stringify(pending.concat(pushed).slice(-50)), { expirationTtl: 3600 });
