@@ -130,6 +130,11 @@ export async function onRequest(context) {
       const k = await keyOf(b.endpoint);
       const items = (b.items || []).filter((i) => i && i.at).slice(0, 200);
       await env.PUSH_KV.put('p:' + k, JSON.stringify(items), { expirationTtl: 60 * 60 * 24 * 7 });
+      if (b.grace) {
+        const g = String(Math.max(120000, Math.min(Number(b.grace) || 0, 24 * 3600000)));
+        const prev = await env.PUSH_KV.get('g:' + k);
+        if (prev !== g) await env.PUSH_KV.put('g:' + k, g, { expirationTtl: 60 * 60 * 24 * 30 });
+      }
       return json({ ok: true, count: items.length });
     }
 
@@ -212,9 +217,10 @@ async function runDue(env) {
       // 页面还活着（120 秒内有心跳）：它自己会弹通知，服务端直接跳过，避免重复
       const aliveRaw = await env.PUSH_KV.get('a:' + k);
       const alive = aliveRaw ? Number(aliveRaw) : 0;
-      // 5 分钟没有心跳 = 应用已被用户从后台划掉（或系统彻底回收）
+      // 超过 grace（默认 3 小时，可被客户端调成 5 分钟）= 应用被划掉或彻底回收
       // → 清空预排程，停止兜底推送，不再主动发消息
-      if (!alive || now - alive > 300000) {
+      const grace = Number(await env.PUSH_KV.get('g:' + k)) || 10800000;
+      if (!alive || now - alive > grace) {
         await env.PUSH_KV.delete('p:' + k);
         continue;
       }
