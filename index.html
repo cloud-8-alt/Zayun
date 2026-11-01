@@ -2562,9 +2562,19 @@ body{
         return b;
     }
 
+    // 是否为「添加到主屏幕」的独立 App 模式（iOS 推送必须）
+    function isStandalonePWA() {
+        try {
+            if (window.navigator.standalone) return true;
+            if (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) return true;
+            if (window.matchMedia && window.matchMedia('(display-mode: fullscreen)').matches) return true;
+        } catch (e) {}
+        return false;
+    }
+
     var Push = {
-        endpoint: '', sub: null, ready: false, status: '未启用',
-        seen: {}, seenList: [], lastSync: 0, _busy: false, _lastAlive: 0,
+        endpoint: '', sub: null, ready: false, status: '未启用', detail: '', apiOk: null,
+        seen: {}, seenList: [], lastSync: 0, _busy: false, _lastAlive: 0, _retried: false,
 
         supported: function () {
             try { return !!(isSecureCtx() && 'serviceWorker' in navigator && 'PushManager' in window); }
@@ -2616,10 +2626,16 @@ body{
                 self.ready = false;
                 var msg = ((err && err.message) || '未知错误');
                 var name = (err && err.name) || '';
+                self.detail = (name ? name + ' · ' : '') + msg;
                 if (/applicationServerKey|not valid/i.test(msg)) msg = '推送公钥格式错误';
                 else if (name === 'NotAllowedError') msg = '通知权限被拒绝';
-                else if (name === 'AbortError') msg = '连接推送服务失败（网络或浏览器限制）';
+                else if (name === 'AbortError') msg = '系统拒绝创建推送订阅';
                 self.status = '订阅失败：' + msg;
+                // 轻微网络波动导致的 AbortError 自动重试一次
+                if (name === 'AbortError' && !self._retried) {
+                    self._retried = true;
+                    setTimeout(function () { self.subscribe(); }, 5000);
+                }
                 try { refreshNotifyPanel(); } catch (e) {}
                 return false;
             });
@@ -2737,6 +2753,14 @@ body{
             } catch (e) {}
 
             if (!self.supported()) { self.status = '当前环境不支持'; return; }
+
+            self.api('/health', { method: 'GET' }).then(function (j) {
+                self.apiOk = !!(j && j.ok);
+                try { refreshNotifyPanel(); } catch (e) {}
+            }).catch(function () {
+                self.apiOk = false;
+                try { refreshNotifyPanel(); } catch (e) {}
+            });
 
             setTimeout(function () {
                 if (notifPermission() === 'granted' && notifyCfg.systemNotify) self.subscribe();
@@ -3263,10 +3287,17 @@ body{
             : '未询问';
         var ns = q('npNotifStatus');
         if (ns) {
+            var ua = navigator.userAgent || '';
+            var plat = isIOSWeb() ? 'iOS/iPadOS' : (/Android/i.test(ua) ? 'Android' : '桌面端');
+            var mode = isStandalonePWA() ? '主屏幕 App 模式' : '浏览器标签页';
+            var apiTxt = Push.apiOk === null ? '检测中' : (Push.apiOk ? '正常' : '连不上');
             ns.textContent =
                 '权限：' + permText + '\n' +
                 'Service Worker：' + swState + '\n' +
-                '云端推送：' + (Push.ready ? '已订阅（页面被冻结时由服务器兜底推送）' : Push.status) + '\n' +
+                '环境：' + plat + ' · ' + mode + '\n' +
+                '推送接口：' + apiTxt + '\n' +
+                '云端推送：' + (Push.ready ? '已订阅（页面被冻结时由服务器兜底推送）' : Push.status) +
+                (Push.detail && !Push.ready ? '\n错误：' + Push.detail : '') + '\n' +
                 '安全环境：' + (isSecureCtx() ? '是（可发系统通知）' : '否（本地文件/HTTP 无法发系统通知）');
         }
     }
