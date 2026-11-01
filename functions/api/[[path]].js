@@ -48,6 +48,36 @@ async function vapidJWT(endpoint, env) {
   return unsigned + '.' + b64u(sig);
 }
 
+
+function b64uDecode(s) {
+  s = String(s || '').replace(/-/g, '+').replace(/_/g, '/');
+  while (s.length % 4) s += '=';
+  const bin = atob(s);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+// 浏览器订阅用的公钥是 65 字节未压缩点（04 + X + Y）；
+// env.VAPID_PUBLIC 只存了 X+Y，这里补上 04 前缀后再给推送服务
+function vapidKey65(env) {
+  if (env.VAPID_X && env.VAPID_Y) {
+    const x = b64uDecode(env.VAPID_X);
+    const y = b64uDecode(env.VAPID_Y);
+    const out = new Uint8Array(65);
+    out[0] = 4;
+    out.set(x, 1);
+    out.set(y, 33);
+    return b64u(out);
+  }
+  const raw = b64uDecode(env.VAPID_PUBLIC);
+  if (raw.length === 65) return b64u(raw);
+  const out2 = new Uint8Array(65);
+  out2[0] = 4;
+  out2.set(raw, 1);
+  return b64u(out2);
+}
+
 async function sendPush(env, endpoint) {
   const jwt = await vapidJWT(endpoint, env);
   const res = await fetch(endpoint, {
@@ -55,7 +85,7 @@ async function sendPush(env, endpoint) {
     headers: {
       TTL: '86400',
       Urgency: 'high',
-      Authorization: 'vapid t=' + jwt + ', k=' + env.VAPID_PUBLIC,
+      Authorization: 'vapid t=' + jwt + ', k=' + vapidKey65(env),
     },
   });
   return res.status;
