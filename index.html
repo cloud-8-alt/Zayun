@@ -2549,6 +2549,18 @@ body{
         for (var i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
         return out;
     }
+    // 浏览器要求 applicationServerKey 是 65 字节未压缩点（0x04 + X + Y），
+    // 服务端存的公钥只有 X+Y 共 64 字节，这里补上 0x04 前缀
+    function vapidKeyBytes(s) {
+        var b = b64urlToBytes(s);
+        if (b.length === 64) {
+            var out = new Uint8Array(65);
+            out[0] = 4;
+            out.set(b, 1);
+            return out;
+        }
+        return b;
+    }
 
     var Push = {
         endpoint: '', sub: null, ready: false, status: '未启用',
@@ -2580,7 +2592,7 @@ body{
                     if (sub) return sub;
                     return reg.pushManager.subscribe({
                         userVisibleOnly: true,
-                        applicationServerKey: b64urlToBytes(VAPID_PUBLIC)
+                        applicationServerKey: vapidKeyBytes(VAPID_PUBLIC)
                     });
                 });
             }).then(function (sub) {
@@ -2602,7 +2614,12 @@ body{
             }).catch(function (err) {
                 self._busy = false;
                 self.ready = false;
-                self.status = '订阅失败：' + ((err && err.message) || '未知');
+                var msg = ((err && err.message) || '未知错误');
+                var name = (err && err.name) || '';
+                if (/applicationServerKey|not valid/i.test(msg)) msg = '推送公钥格式错误';
+                else if (name === 'NotAllowedError') msg = '通知权限被拒绝';
+                else if (name === 'AbortError') msg = '连接推送服务失败（网络或浏览器限制）';
+                self.status = '订阅失败：' + msg;
                 try { refreshNotifyPanel(); } catch (e) {}
                 return false;
             });
