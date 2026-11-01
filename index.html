@@ -2649,26 +2649,37 @@ body{
             });
         },
 
-        // 预排程：把接下来 3 小时要发的消息提前交给服务器
+        // 预排程：把接下来 3 小时要发生的消息 / 来电 / 陪伴 / 听歌提前交给服务器
+        // 只在页面被系统冻结时才由服务器推送；页面活着时服务器会跳过，不会重复
         buildPlan: function () {
-            // 主动发消息关掉时，云端不留任何预排程，保证对方不会主动私信过来
-            if (typeof proactiveEnabled !== 'undefined' && !proactiveEnabled) return [];
             var now = Date.now();
             var name = (typeof partnerInfo !== 'undefined' && partnerInfo && partnerInfo.name) ? partnerInfo.name : 'Zayu';
             var items = [];
+            var auto = (typeof proactiveEnabled === 'undefined') ? true : !!proactiveEnabled;
+            // 代码里三类社交事件的概率都是每分钟 0.015，这里换算到 5 分钟一格
+            var p5 = 1 - Math.pow(1 - 0.015, 5);
             for (var m = PUSH_PLAN_STEP; m <= PUSH_PLAN_MIN; m += PUSH_PLAN_STEP) {
                 var at = Math.floor((now + m * 60000) / 60000) * 60000;
-                var txt = '';
-                try { txt = getRandomCardMessage() || ''; } catch (e) {}
-                if (!txt) txt = '在吗？';
-                items.push({
-                    id: 'p' + at + '-' + Math.random().toString(36).slice(2, 6),
-                    at: at,
-                    title: name,
-                    body: txt,
-                    kind: 'msg'
-                });
+                var rnd = Math.random().toString(36).slice(2, 6);
+                // 主动聊天消息：受「角色主动发消息」开关限制
+                if (auto) {
+                    var txt = '';
+                    try { txt = getRandomCardMessage() || ''; } catch (e) {}
+                    if (!txt) txt = '在吗？';
+                    items.push({ id: 'p' + at + '-' + rnd, at: at, title: name, body: txt, kind: 'msg' });
+                }
+                // 来电 / 陪伴 / 听歌：不受主动发消息开关限制
+                if (Math.random() < p5) {
+                    items.push({ id: 'c' + at + '-' + rnd + 'a', at: at, title: name, body: name + ' 邀请你视频通话', kind: 'call' });
+                }
+                if (Math.random() < p5) {
+                    items.push({ id: 'o' + at + '-' + rnd + 'b', at: at, title: name, body: name + ' 想陪你待一会儿', kind: 'companion' });
+                }
+                if (Math.random() < p5) {
+                    items.push({ id: 'm' + at + '-' + rnd + 'c', at: at, title: name, body: name + ' 邀请你一起听歌', kind: 'music' });
+                }
             }
+            items.sort(function (a, b) { return a.at - b.at; });
             return items;
         },
         uploadPlan: function () {
@@ -2721,6 +2732,8 @@ body{
                         if (!it || !it.id || self.seen[it.id]) return;
                         self.markSeen(it.id);
                         if (!it.pushed) return;
+                        // 来电/陪伴/听歌不是聊天文字，只弹过通知，不回填成聊天消息
+                        if (it.kind && it.kind !== 'msg') return;
                         var msg = {
                             id: msgId++, type: 'text', text: String(it.body || ''),
                             isPartner: true, time: it.at || Date.now(), read: true,
@@ -3032,11 +3045,31 @@ body{
             if ('serviceWorker' in navigator) {
                 navigator.serviceWorker.addEventListener('message', function (ev) {
                     var d = ev.data || {};
-                    if (d.type !== 'call-action') return;
-                    try { window.focus(); } catch (e) {}
-                    if (typeof callState !== 'undefined' && callState === 'incoming') {
-                        if (d.action === 'accept') acceptCall();
-                        else rejectCall();
+                    if (d.type === 'call-action') {
+                        try { window.focus(); } catch (e) {}
+                        if (typeof callState !== 'undefined' && callState === 'incoming') {
+                            if (d.action === 'accept') acceptCall();
+                            else rejectCall();
+                        }
+                        return;
+                    }
+                    if (d.type === 'cloud-call') {
+                        try { window.focus(); } catch (e) {}
+                        try {
+                            if (typeof callState !== 'undefined' && callState) {
+                                if (callState === 'incoming') {
+                                    if (d.action === 'accept') acceptCall();
+                                    else if (d.action === 'reject') rejectCall();
+                                }
+                                return;
+                            }
+                            if (typeof triggerIncomingCall === 'function') triggerIncomingCall();
+                            if (d.action === 'accept' && typeof acceptCall === 'function') {
+                                setTimeout(function () { try { acceptCall(); } catch (e) {} }, 300);
+                            } else if (d.action === 'reject' && typeof rejectCall === 'function') {
+                                setTimeout(function () { try { rejectCall(); } catch (e) {} }, 300);
+                            }
+                        } catch (e) {}
                     }
                 });
             }
