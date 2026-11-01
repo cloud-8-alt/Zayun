@@ -212,7 +212,13 @@ async function runDue(env) {
       // 页面还活着（120 秒内有心跳）：它自己会弹通知，服务端直接跳过，避免重复
       const aliveRaw = await env.PUSH_KV.get('a:' + k);
       const alive = aliveRaw ? Number(aliveRaw) : 0;
-      if (alive && now - alive < 120000) continue;
+      // 5 分钟没有心跳 = 应用已被用户从后台划掉（或系统彻底回收）
+      // → 清空预排程，停止兜底推送，不再主动发消息
+      if (!alive || now - alive > 300000) {
+        await env.PUSH_KV.delete('p:' + k);
+        continue;
+      }
+      if (now - alive < 120000) continue;
 
       const sub = await getJSON(env.PUSH_KV, 's:' + k, null);
       if (!sub) continue;
