@@ -2535,7 +2535,8 @@ body{
     // ====== 云端推送（Cloudflare Pages Functions + Web Push）======
     // 页面被系统冻结/回收时，由服务器按“预排程”发出 Web Push，SW 取明细后逐条弹通知
     var PUSH_API = 'https://zayun.pages.dev/api';
-    var VAPID_PUBLIC = 'jaBD7Gyp-jwQCwJcKZsbWMyRxewMpr7fZnjB5rd6f3UTn9lvKDi5S7p7aNuQkCT6PcTEVj-bjPOKcagZoR1pjA';
+    // 65 字节未压缩点：04 + X + Y（与 Worker 里的 VAPID_PRIVATE 成对）
+    var VAPID_PUBLIC = 'BI2gQ-xsqfo8EAsCXCmbG1jMkcXsDKa-32Z4wea3en91Tn9lvKDi5S7p7aNuQkCT6PcTEVj-bjPOKcagZoR1pjA';
     var PUSH_SUB_KEY = 'zayu_push_ep_v1';
     var PUSH_SEEN_KEY = 'zayu_push_seen_v1';
     var PUSH_SYNC_KEY = 'zayu_push_sync_v1';
