@@ -217,9 +217,9 @@ async function runDue(env) {
       // 页面还活着（120 秒内有心跳）：它自己会弹通知，服务端直接跳过，避免重复
       const aliveRaw = await env.PUSH_KV.get('a:' + k);
       const alive = aliveRaw ? Number(aliveRaw) : 0;
-      // 超过 grace（默认 3 小时，可被客户端调成 5 分钟）= 应用被划掉或彻底回收
-      // → 清空预排程，停止兜底推送，不再主动发消息
-      const grace = Number(await env.PUSH_KV.get('g:' + k)) || 10800000;
+      // 超过 grace（默认 5 分钟；客户端打开「划掉后仍接收推送」则为 3 小时）
+      // = 应用被划掉或彻底回收 → 清空预排程，停止兜底推送，不再主动发消息
+      const grace = Number(await env.PUSH_KV.get('g:' + k)) || 300000;
       if (!alive || now - alive > grace) {
         await env.PUSH_KV.delete('p:' + k);
         continue;
