@@ -50,9 +50,9 @@
   - `KV` —— 绑定 KV 命名空间 `zayu-storage`（KV namespace binding）
   - `CFS_KEY`、`CFS_EMAIL`、`CFS_TOKEN`、`CF_ZONE_ID` —— 调用 Cloudflare API 用（只在 Worker 里用，Functions 不需要）
 
-### 2. Cloudflare Worker（每分钟兜底推送）
-- Worker 名：`push-hedge`
-- 触发：Cron `*/1 * * * *`（每分钟一次）
+### 2. Cloudflare Worker（兜底推送，实际脚本名 `zayu-push`）
+- Worker 名：`zayu-push`
+- 触发：Cron `*/2 * * * *`（每 2 分钟一次；**不能设成每分钟**，否则一天 1440 次 list 会超过免费额度 1000 次/天）
 - 绑定 KV：`zayu-push`
 - 环境变量 / Secrets（在 Worker 控制台 → Settings → Variables）：
   - `CFS_KEY`：Cloudflare API Key
@@ -62,14 +62,12 @@
   - 绑定 KV namespace `zayu-push` 到变量名 `KV`
 
 ### 3. Cloudflare KV（两个命名空间）
-- `zayu-storage`：存用户数据备份（通过 Pages Functions 读写）
+- `zayu-storage`：存用户数据备份（通过 Pages Functions 读写，**只在手动备份时写**）
   - Key 格式：`b:<endpoint>` —— 备份数据
-  - Key 格式：`r:<recoveryCode>` —— 恢复码 → endpoint 的映射
 - `zayu-push`：存推送订阅、预排程、心跳（通过 Worker 读写）
   - `s:<endpoint>` —— Web Push 订阅信息（expiration 365 天）
-  - `p:<endpoint>` —— 预排程的消息/事件数组（expiration 7 天）
-  - `a:<endpoint>` —— 最后心跳时间戳（expiration 600 秒）
-  - `g:<endpoint>` —— 宽限窗口（毫秒），默认 `300000`（5 分钟）；被音频打断时设为 `10800000`（3 小时）
+  - `k:<endpoint>` —— **合并记录**：`{at: 最后心跳, grace: 宽限毫秒, plan: 预排程数组}`，客户端每 2 分钟写 1 次（TTL 4 小时）。心跳、预排程、宽限窗口放在同一个 key，是为了把 KV 写入量压到免费额度以内
+  - `p:` / `a:` / `g:` —— 旧版的三键结构，服务端仍兼容读取，新客户端不再写入
   - `z:<endpoint>` —— 同步日志，防重复（本地 localStorage 也有一份）
 
 > ⚠️ **千万不要把密钥值写进代码或 README**。上面这些只是变量名，真实值在 Cloudflare 控制台里。
@@ -132,8 +130,9 @@
 | `/api/sub` | POST | 上传 Web Push 订阅信息到 KV |
 | `/api/unsub` | POST | 删除订阅 |
 | `/api/plan` | POST | 上传预排程（消息/来电/陪伴/听歌） |
-| `/api/alive` | POST | 心跳（页面活着时每 75 秒一次） |
-| `/api/grace` | POST | 设置宽限窗口（音频被抢时 3 小时，否则 5 分钟） |
+| `/api/beat` | POST | **主要写入接口**：心跳 + 预排程 + 宽限窗口合并在 1 次 KV 写（客户端每 2 分钟调用） |
+| `/api/alive` | POST | 旧版心跳（兼容保留） |
+| `/api/grace` | POST | 旧版宽限窗口（兼容保留） |
 | `/api/pending` | GET | Service Worker 拉取待推送明细 |
 | `/api/push` | POST | 服务器推送测试 |
 | `/api/backup` | POST | 上传云端备份（只在手动点「立即备份」时调用） |
