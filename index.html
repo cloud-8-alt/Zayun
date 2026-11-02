@@ -2951,9 +2951,9 @@ body{
                 }
                 a.addEventListener('pause', function () {
                     if (!notifyCfg.keepAlive || self._stopping || self.userPaused) return;
-                    // 在后台被别的 App（抖音/视频）抢走音频：页面虽然还活着但可能马上被挂起，
-                    // 这时放宽云端判定，保证这段时间对方发消息仍能推到这台设备
-                    if (document.hidden) { try { Push.setGrace(PUSH_PLAN_MIN * 60000); } catch (e) {} }
+                    // 注意：这里不再放宽云端判定窗口。
+                    // 「刷抖音被抢音频」和「从任务栏划掉」在 iOS 上表现完全一样（都是心跳中断），
+                    // 一旦放宽就无法在划掉后及时安静，所以统一按默认 5 分钟收敛
                     setTimeout(function () {
                         if (notifyCfg.keepAlive && !self._stopping && !self.userPaused && self.audio && self.audio.paused) self.start();
                     }, 600);
