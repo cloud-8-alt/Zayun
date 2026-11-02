@@ -2803,14 +2803,15 @@ body{
             setInterval(function () { if (self.endpoint) self.uploadPlan(); }, 5 * 60000);
 
             document.addEventListener('visibilitychange', function () {
-                self.alive();
-                if (document.hidden) return;
-                try { self.setGrace(self.graceMs()); } catch (e) {}
-                if (self.endpoint) { self.uploadPlan(); self.syncLog(); }
+                // 回到前台：把兜底判定恢复成默认（音频被抢时会由 pause 处理器放宽）
+                if (!document.hidden) {
+                    try { self.setGrace(self.graceMs()); } catch (e) {}
+                    self.syncLog();
+                }
             });
 
             window.addEventListener('online', function () {
-                if (self.endpoint) { self.uploadPlan(); self.syncLog(); }
+                if (self.endpoint) { self.alive(); self.uploadPlan(); self.syncLog(); }
             });
         }
     };
@@ -3229,8 +3230,8 @@ body{
             '  </div>',
             '  <div class="np-sec">数据与备份</div>',
             '  <div class="np-card">',
-            '    <div class="np-row"><div class="np-txt"><div class="t">恢复码</div><div class="d">换手机、删掉图标重装或清了网站数据后，用这串码把聊天记录从云端找回来，请截图保存</div><div class="np-run" id="npCode">—</div></div></div>',
-            '    <div class="np-actions"><button type="button" class="np-btn" id="npCopyCode">复制恢复码</button><button type="button" class="np-btn" id="npBackupNow">立即备份</button><button type="button" class="np-btn" id="npRestoreNow">用恢复码恢复</button></div>',
+            '    <div class="np-row"><div class="np-txt"><div class="t">云端备份（手动）</div><div class="d">不会自动上传。想备份时自己点一下，一天最多一两次即可；不点就不占用云端额度</div></div></div>',
+            '    <div class="np-actions"><button type="button" class="np-btn" id="npBackupNow">立即备份</button></div>',
             '    <div class="np-status" id="npDataStatus"></div>',
             '  </div>',
             '</div>'
@@ -3297,22 +3298,13 @@ body{
             }
             pushNotify({ title: (partnerInfo.name || 'Zayu'), body: '这是一条通知测试消息', emoji: '💬', kind: 'msg', tag: 'zayu-test-' + Date.now() });
         });
-        notifyPanelEl.querySelector('#npCopyCode').addEventListener('click', function () {
-            var code = getRecoverCode();
-            var done = function () { showToast('恢复码已复制：' + code); };
-            try {
-                if (navigator.clipboard && navigator.clipboard.writeText) {
-                    navigator.clipboard.writeText(code).then(done).catch(function () { showToast('恢复码：' + code); });
-                } else { showToast('恢复码：' + code); }
-            } catch (e) { showToast('恢复码：' + code); }
-        });
         notifyPanelEl.querySelector('#npBackupNow').addEventListener('click', function () {
             var el = notifyPanelEl.querySelector('#npDataStatus');
             if (el) el.textContent = '正在上传备份…';
             try {
                 if (!Push.endpoint) { if (el) el.textContent = '请先开启「接收对方消息推送」'; return; }
                 var payload = JSON.stringify({ chat: chatSnapshot(true), ext: extSnapshot(), at: Date.now() });
-                Push.api('/backup', { body: { endpoint: Push.endpoint, code: getRecoverCode(), data: payload } }).then(function (j) {
+                Push.api('/backup', { body: { endpoint: Push.endpoint, data: payload } }).then(function (j) {
                     try { localStorage.setItem('zayu_backup_at', String(Date.now())); } catch (e) {}
                     if (el) el.textContent = '备份成功 · ' + new Date().toLocaleString() + ' · ' + Math.round(payload.length / 1024) + ' KB';
                     showToast('云端备份已完成');
@@ -3322,18 +3314,6 @@ body{
             } catch (e) {
                 if (el) el.textContent = '备份失败：' + ((e && e.message) || '未知错误');
             }
-        });
-        notifyPanelEl.querySelector('#npRestoreNow').addEventListener('click', function () {
-            var el = notifyPanelEl.querySelector('#npDataStatus');
-            var input = window.prompt('输入恢复码（例如 8F2K-3M9Q-X7B4）', getRecoverCode());
-            if (!input) return;
-            if (el) el.textContent = '正在从云端恢复…';
-            restoreByCode(input).then(function () {
-                if (el) el.textContent = '恢复成功 · ' + new Date().toLocaleString();
-                showToast('已恢复聊天记录');
-            }).catch(function (e) {
-                if (el) el.textContent = '恢复失败：' + ((e && e.message) || '未知错误');
-            });
         });
     }
 
@@ -3400,12 +3380,10 @@ body{
                 (Push.detail && !Push.ready ? '\n错误：' + Push.detail : '') + '\n' +
                 '安全环境：' + (isSecureCtx() ? '是（可发系统通知）' : '否（本地文件/HTTP 无法发系统通知）');
         }
-        var codeEl = q('npCode');
-        if (codeEl) codeEl.textContent = getRecoverCode() || '—';
         var ds = q('npDataStatus');
         if (ds && !ds.textContent) {
             var bat = Number(localStorage.getItem('zayu_backup_at') || 0);
-            ds.textContent = bat ? ('最近一次云端备份：' + new Date(bat).toLocaleString()) : '还没有云端备份（开启推送后会自动每天备份一次）';
+            ds.textContent = bat ? ('最近一次云端备份：' + new Date(bat).toLocaleString()) : '还没有云端备份（需要时自己点「立即备份」）';
         }
     }
 
@@ -3687,7 +3665,6 @@ body{
                 pruneSnapshots();
             }
         } catch (e) {}
-        cloudBackup(false);
     }
     function pruneSnapshots() {
         idbOpen().then(function (db) {
@@ -3700,55 +3677,6 @@ body{
                 for (var i = 0; i < extra; i++) st.delete(keys[i]);
             };
         }).catch(function () {});
-    }
-
-    // 恢复码：一串固定在本地生成的短码，换机/清缓存后凭它从云端找回存档
-    // （云端备份同时按「推送 endpoint」和「恢复码」存两份，endpoint 变了也不会丢）
-    function ensureRecoverCode() {
-        try {
-            var v = localStorage.getItem(RECOVER_KEY);
-            if (v && /^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(v)) return v;
-            var abc = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-            var arr = [];
-            for (var i = 0; i < 12; i++) {
-                if (i === 4 || i === 8) arr.push('-');
-                arr.push(abc.charAt(Math.floor(Math.random() * abc.length)));
-            }
-            v = arr.join('');
-            localStorage.setItem(RECOVER_KEY, v);
-            return v;
-        } catch (e) { return ''; }
-    }
-    function getRecoverCode() { return ensureRecoverCode(); }
-
-    // 云端备份（每天一次，换手机/清缓存后可恢复）
-    function cloudBackup(force) {
-        try {
-            if (!Push.endpoint) return;
-            var last = Number(localStorage.getItem('zayu_backup_at') || 0);
-            if (!force && Date.now() - last < 24 * 3600 * 1000) return;
-            var payload = JSON.stringify({ chat: chatSnapshot(true), ext: extSnapshot(), at: Date.now() });
-            Push.api('/backup', { body: { endpoint: Push.endpoint, code: getRecoverCode(), data: payload } }).then(function (j) {
-                if (j && j.ok) {
-                    try { localStorage.setItem('zayu_backup_at', String(Date.now())); } catch (e) {}
-                }
-            }).catch(function () {});
-        } catch (e) {}
-    }
-
-    // 用恢复码手动从云端恢复（换机 / 清了网站数据之后）
-    function restoreByCode(code) {
-        code = String(code || getRecoverCode()).replace(/[^A-Za-z0-9]/g, '').toUpperCase();
-        if (code.length !== 12) return Promise.reject(new Error('恢复码格式不正确'));
-        var shown = code.slice(0, 4) + '-' + code.slice(4, 8) + '-' + code.slice(8, 12);
-        return Push.api('/backup?code=' + encodeURIComponent(shown), { method: 'GET' }).then(function (j) {
-            if (!j || !j.data) throw new Error('没有找到这个恢复码的备份');
-            var rec = JSON.parse(j.data);
-            if (!applyFullSnapshot(rec)) throw new Error('备份内容无法解析');
-            try { saveDataImmediate(); } catch (e) {}
-            try { localStorage.setItem(RECOVER_KEY, shown); } catch (e) {}
-            return true;
-        });
     }
 
     // 把一份完整存档应用到内存 + 界面
@@ -3793,16 +3721,11 @@ body{
         });
     }
 
-    // 本地完全没数据时，尝试从云端备份恢复（先按 endpoint，再按恢复码）
+    // 本地完全没数据时，尝试从云端备份恢复（按推送 endpoint 找回）
     function tryCloudRestore() {
         if (messages.length) return;
         try { if (!Push.endpoint) return; } catch (e) { return; }
-        var code = getRecoverCode();
         Push.api('/backup?endpoint=' + encodeURIComponent(Push.endpoint), { method: 'GET' })
-            .then(function (j) {
-                if (j && j.data) return j;
-                return Push.api('/backup?code=' + encodeURIComponent(code), { method: 'GET' });
-            })
             .then(function (j) {
                 if (!j || !j.data) return;
                 var rec = JSON.parse(j.data);
