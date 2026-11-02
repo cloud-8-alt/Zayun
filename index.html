@@ -7352,7 +7352,7 @@ body{
     function createMenuToggleItem(text, isOn, onToggle) {
         var item = document.createElement('div');
         item.className = 'menu-item menu-toggle-item';
-        item.innerHTML = '<span style="display:flex;align-items:center;"><span class="menu-icon">✈</span><span>' + text + '</span></span>' +
+        item.innerHTML = '<span style="display:flex;align-items:center;"><span class="menu-icon" style="color:#8fc0ea;font-size:17px;">✩</span><span>' + text + '</span></span>' +
             '<span class="menu-switch' + (isOn ? ' on' : '') + '"></span>';
         item.addEventListener('click', function(e) {
             e.stopPropagation();
