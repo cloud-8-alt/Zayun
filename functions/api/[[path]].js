@@ -252,7 +252,7 @@ async function runDue(env) {
       }
 
       // 页面还活着（3 分钟内有心跳）：通知由页面自己弹，服务端不写、不推
-      if (now - alive < 180000) continue;
+      if (now - alive < 130000) continue;
 
       const rest = plan.filter((i) => i && i.at > now);
       if (merged) {
