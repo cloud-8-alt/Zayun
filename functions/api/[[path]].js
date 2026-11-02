@@ -124,6 +124,18 @@ export async function onRequest(context) {
       return json({ ok: status >= 200 && status < 300, status });
     }
 
+    // 合并写入：心跳 + 预排程 + 宽限窗口只占 1 次 KV 写（客户端每 2 分钟调用一次）
+    if (path === '/beat' && request.method === 'POST') {
+      const b = await request.json();
+      if (!b.endpoint) return json({ error: 'endpoint required' }, 400);
+      const k = await keyOf(b.endpoint);
+      const plan = (b.plan || []).filter((i) => i && i.at).slice(0, 300);
+      const grace = Math.max(120000, Math.min(Number(b.grace) || 300000, 24 * 3600000));
+      const at = Number(b.at) || Date.now();
+      await env.PUSH_KV.put('k:' + k, JSON.stringify({ at, grace, plan }), { expirationTtl: 60 * 60 * 4 });
+      return json({ ok: true, count: plan.length, at, grace });
+    }
+
     if (path === '/plan' && request.method === 'POST') {
       const b = await request.json();
       if (!b.endpoint) return json({ error: 'endpoint required' }, 400);
@@ -215,26 +227,39 @@ async function runDue(env) {
     const page = await env.PUSH_KV.list({ prefix: 's:', cursor });
     for (const key of page.keys) {
       const k = key.name.slice(2);
-      const plan = await getJSON(env.PUSH_KV, 'p:' + k, []);
+      // 优先读合并 key（心跳 + 预排程 + 宽限窗口），兼容旧的三键结构
+      const merged = await getJSON(env.PUSH_KV, 'k:' + k, null);
+      let plan, alive, grace;
+      if (merged) {
+        plan = merged.plan || [];
+        alive = Number(merged.at) || 0;
+        grace = Number(merged.grace) || 300000;
+      } else {
+        plan = await getJSON(env.PUSH_KV, 'p:' + k, []);
+        alive = Number(await env.PUSH_KV.get('a:' + k)) || 0;
+        grace = Number(await env.PUSH_KV.get('g:' + k)) || 300000;
+      }
       if (!plan.length) continue;
 
       const due = plan.filter((i) => i && i.at <= now);
       if (!due.length) continue;
 
-      const rest = plan.filter((i) => i && i.at > now);
-      await env.PUSH_KV.put('p:' + k, JSON.stringify(rest), { expirationTtl: 60 * 60 * 24 * 7 });
-
-      // 页面还活着（120 秒内有心跳）：它自己会弹通知，服务端直接跳过，避免重复
-      const aliveRaw = await env.PUSH_KV.get('a:' + k);
-      const alive = aliveRaw ? Number(aliveRaw) : 0;
-      // 超过 grace（默认 5 分钟；客户端打开「划掉后仍接收推送」则为 3 小时）
-      // = 应用被划掉或彻底回收 → 清空预排程，停止兜底推送，不再主动发消息
-      const grace = Number(await env.PUSH_KV.get('g:' + k)) || 300000;
+      // 超过 grace 没有心跳 = 已划掉 / 被系统回收 → 清空预排程，彻底停止推送
       if (!alive || now - alive > grace) {
-        await env.PUSH_KV.delete('p:' + k);
+        if (merged) await env.PUSH_KV.delete('k:' + k);
+        else await env.PUSH_KV.put('p:' + k, '[]');
         continue;
       }
-      if (now - alive < 120000) continue;
+
+      // 页面还活着（3 分钟内有心跳）：通知由页面自己弹，服务端不写、不推
+      if (now - alive < 180000) continue;
+
+      const rest = plan.filter((i) => i && i.at > now);
+      if (merged) {
+        await env.PUSH_KV.put('k:' + k, JSON.stringify({ at: alive, grace, plan: rest }), { expirationTtl: 60 * 60 * 4 });
+      } else {
+        await env.PUSH_KV.put('p:' + k, JSON.stringify(rest), { expirationTtl: 60 * 60 * 24 * 7 });
+      }
 
       const sub = await getJSON(env.PUSH_KV, 's:' + k, null);
       if (!sub) continue;
