@@ -2582,7 +2582,7 @@ body{
 
     var Push = {
         endpoint: '', sub: null, ready: false, status: '未启用', detail: '', apiOk: null,
-        seen: {}, seenList: [], lastSync: 0, _busy: false, _lastAlive: 0, _retried: false,
+        seen: {}, seenList: [], lastSync: 0, _busy: false, _lastBeat: 0, _graceOverride: 0, _retried: false,
 
         supported: function () {
             try { return !!(isSecureCtx() && 'serviceWorker' in navigator && 'PushManager' in window); }
@@ -2625,7 +2625,6 @@ body{
                 self.ready = true;
                 self.status = '已开启';
                 self.uploadPlan();
-                self.alive();
                 self.syncLog();
                 try { refreshNotifyPanel(); } catch (e) {}
                 return true;
@@ -2682,26 +2681,33 @@ body{
             items.sort(function (a, b) { return a.at - b.at; });
             return items;
         },
-        uploadPlan: function () {
+        // 一次写入搞定：心跳 + 预排程 + 宽限窗口（合并到同一个 KV key，省额度）
+        uploadPlan: function () { this.beat(true); },
+        alive: function () { this.beat(false); },
+        beat: function (force) {
             var self = this;
             if (!self.endpoint) return;
-            self.api('/plan', { body: { endpoint: self.endpoint, items: self.buildPlan(), grace: self.graceMs() } }).catch(function () {});
-        },
-        alive: function () {
-            var self = this;
-            if (!self.endpoint) return;
-            if (Date.now() - self._lastAlive < 50000) return;
-            self._lastAlive = Date.now();
-            self.api('/alive', { body: { endpoint: self.endpoint } }).catch(function () {});
+            var now = Date.now();
+            if (!force && now - self._lastBeat < 100000) return;
+            self._lastBeat = now;
+            self.api('/beat', {
+                body: {
+                    endpoint: self.endpoint,
+                    at: now,
+                    grace: self.graceMs(),
+                    plan: self.buildPlan()
+                }
+            }).catch(function () {});
         },
         // 页面多久没有心跳算「已关闭」：默认 5 分钟（划掉应用后很快彻底安静）；
-        // 音频被抖音/视频抢走时会自动放宽到 3 小时（见 KeepAlive 的 pause 处理）
-        graceMs: function () { return 5 * 60000; },
-        // 放宽/收紧「多久没心跳算已关闭」，两者都只写一次 KV
+        // 音频被抖音/视频抢走时会临时放宽到 3 小时（见 KeepAlive 的 pause 处理）
+        graceMs: function () { return this._graceOverride || 5 * 60000; },
+        // 放宽/收紧「多久没心跳算已关闭」，下一次 beat 会一起带上
         setGrace: function (ms) {
             var self = this;
-            if (!self.endpoint) return;
-            self.api('/grace', { body: { endpoint: self.endpoint, ms: ms } }).catch(function () {});
+            var def = 5 * 60000;
+            self._graceOverride = (Number(ms) > def) ? Number(ms) : 0;
+            self.beat(true);
         },
 
         markSeen: function (id) {
@@ -2799,19 +2805,20 @@ body{
                 else if (self.endpoint) self.ready = true;
             }, 1200);
 
-            setInterval(function () { self.alive(); }, 75000);
-            setInterval(function () { if (self.endpoint) self.uploadPlan(); }, 5 * 60000);
+            // 每 2 分钟一次写入：心跳 + 预排程 + 宽限窗口合并，省 KV 免费额度
+            setInterval(function () { self.alive(); }, 120000);
 
             document.addEventListener('visibilitychange', function () {
-                // 回到前台：把兜底判定恢复成默认（音频被抢时会由 pause 处理器放宽）
+                // 回到前台：恢复默认判定，并立刻写一次
                 if (!document.hidden) {
-                    try { self.setGrace(self.graceMs()); } catch (e) {}
+                    self._graceOverride = 0;
+                    self.alive();
                     self.syncLog();
                 }
             });
 
             window.addEventListener('online', function () {
-                if (self.endpoint) { self.alive(); self.uploadPlan(); self.syncLog(); }
+                if (self.endpoint) { self.uploadPlan(); self.syncLog(); }
             });
         }
     };
