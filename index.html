@@ -2541,8 +2541,9 @@ body{
     var PUSH_SEEN_KEY = 'zayu_push_seen_v1';
     var PUSH_SYNC_KEY = 'zayu_push_sync_v1';
     var PUSH_PLAN_MIN = 180;   // 预排程覆盖未来 3 小时（刷抖音/长时间不打开也不断）
-    var PUSH_PLAN_STEP = 3;    // 冻结时每 3 分钟一条（配合每 2 分钟一次的定时任务，实际 3-5 分钟到达）
+    var PUSH_PLAN_STEP = 2;    // 冻结时每 2 分钟一条（配合 2 分钟一次的定时任务，实际 2-4 分钟到达）
     var resumeQuietUntil = 0; // 回到页面的静默期：避免积压的回复一次性弹一堆通知
+    var resumeQuietShown = false; // 静默期内只放行第一条通知，其余只入库
 
     // 申请持久化存储：降低系统/浏览器在空间紧张时把本站存档清掉的风险
     try {
@@ -2688,7 +2689,9 @@ body{
             var self = this;
             if (!self.endpoint) return;
             var now = Date.now();
-            if (!force && now - self._lastBeat < 100000) return;
+            // 前台 90 秒、后台 60 秒：后台跳得更勤，服务器能更快发现「页面被冻结」并接管兜底
+            var interval = document.hidden ? 55000 : 85000;
+            if (!force && now - self._lastBeat < interval) return;
             self._lastBeat = now;
             self.api('/beat', {
                 body: {
@@ -2805,22 +2808,28 @@ body{
                 else if (self.endpoint) self.ready = true;
             }, 1200);
 
-            // 每 2 分钟一次写入：心跳 + 预排程 + 宽限窗口合并，省 KV 免费额度
-            setInterval(function () { self.alive(); }, 120000);
+            // 每 30 秒检查一次，实际写入间隔由 beat 内部决定（前台 90 秒 / 后台 60 秒）
+            setInterval(function () { self.alive(); }, 30000);
 
             document.addEventListener('visibilitychange', function () {
                 // 回到前台：记录隐藏时长，久别回来后短时间静默弹通知（消息照常入聊天记录）
                 if (document.hidden) {
                     self._hiddenAt = Date.now();
+                    // 一进后台就先把判定窗口收回默认 5 分钟：万一被划掉，云端很快安静
+                    self._graceOverride = 0;
+                    self.beat(true);
                     return;
                 }
                 if (self._hiddenAt) {
-                    if (Date.now() - self._hiddenAt > 45000) resumeQuietUntil = Date.now() + 30000;
+                    if (Date.now() - self._hiddenAt > 45000) {
+                        resumeQuietUntil = Date.now() + 30000;
+                        resumeQuietShown = false;
+                    }
                     self._hiddenAt = 0;
                 }
                 // 恢复默认判定，并立刻写一次
                 self._graceOverride = 0;
-                self.alive();
+                self.beat(true);
                 self.syncLog();
             });
 
@@ -2837,7 +2846,11 @@ body{
                 try { window.AndroidInterface.onPartnerMessage(String(text || '')); } catch(e) {}
             }
             // 浏览器通知（横幅 + 系统通知，同一条消息只走一次）
-            if (Date.now() < resumeQuietUntil) return; // 刚回到页面：只入库不弹，避免攒着的一堆通知一次性炸开
+            if (Date.now() < resumeQuietUntil) {
+                // 刚回到页面：只放行第一条，避免攒着的一堆通知一次性炸开
+                if (resumeQuietShown) return;
+                resumeQuietShown = true;
+            }
             notifyPartnerMessage(String(text || ''));
         },
         setPartnerName: function(name) {
