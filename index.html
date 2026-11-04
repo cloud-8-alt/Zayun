@@ -2863,7 +2863,7 @@ body{
                         resumeQuietShown = false;
                         resumeQuietCount = 0;
                         setTimeout(function () {
-                            if (resumeQuietCount > 1) notifyPartnerMessage('你有 ' + resumeQuietCount + ' 条新消息');
+                            if (resumeQuietCount >= 1) notifyPartnerMessage('你有 ' + resumeQuietCount + ' 条消息未查看');
                             resumeQuietCount = 0;
                         }, 6500);
                     }
@@ -2889,12 +2889,9 @@ body{
             }
             // 浏览器通知（横幅 + 系统通知，同一条消息只走一次）
             if (Date.now() < resumeQuietUntil) {
-                // 刚回到页面：第一条照常弹，其余的攒起来，静默结束后合成一条汇总
-                if (resumeQuietShown) {
-                    resumeQuietCount++;
-                    return;
-                }
-                resumeQuietShown = true;
+                // 刚回到页面：这一批积压消息不逐条弹，只累计数量，稍后合成一条汇总
+                resumeQuietCount++;
+                return;
             }
             notifyPartnerMessage(String(text || ''));
         },
@@ -3002,10 +2999,19 @@ body{
                     a.volume = notifyCfg.quietChannel ? 0.0001 : 0.03;
                 }
                 a.addEventListener('pause', function () {
-                    // 被其它 App（抖音/视频/通话）抢走音频时，不再自动抢回来，
-                    // 否则会形成「我们抢回→抖音被暂停→抖音抢回→我们被暂停」的死循环，
-                    // 表现为刷抖音几秒就暂停。这里改为：等用户回到页面/再次触摸时再恢复。
+                    // 被其它 App（抖音/视频/通话）抢走音频后，延迟 2 秒再抢回来。
+                    // 这段时间内页面必须保持运行，否则会收不到通知；
+                    // 抖音被短暂压低音量/暂停是代价，但消息通知优先级更高。
+                    if (!notifyCfg.keepAlive || self._stopping || self.userPaused) return;
                     self.interrupted = true;
+                    setTimeout(function () {
+                        if (!notifyCfg.keepAlive || self._stopping || self.userPaused) return;
+                        if (!document.hidden) return;
+                        if (self.audio && self.audio.paused) {
+                            self.interrupted = false;
+                            self.start();
+                        }
+                    }, 2000);
                 });
                 this.audio = a;
                 this.setupMedia();
@@ -8513,14 +8519,6 @@ body{
         });
 
         // 页面卸载前保存
-        window.addEventListener('pagehide', function () {
-            // 真正离开（划掉/关闭页面）时通知服务器立刻清空，避免划掉后还继续推送
-            try {
-                if (CloudPush && CloudPush.endpoint && navigator.sendBeacon) {
-                    navigator.sendBeacon('/api/closed?endpoint=' + encodeURIComponent(CloudPush.endpoint), '');
-                }
-            } catch (e) {}
-        });
         window.addEventListener('beforeunload', function() {
             if (replyTimer) clearTimeout(replyTimer);
             if (callTimerInterval) clearInterval(callTimerInterval);
