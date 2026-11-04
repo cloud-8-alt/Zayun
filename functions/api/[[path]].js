@@ -141,7 +141,7 @@ export async function onRequest(context) {
       if (!b.endpoint) return json({ error: 'endpoint required' }, 400);
       const k = await keyOf(b.endpoint);
       const plan = (b.plan || []).filter((i) => i && i.at).slice(0, 300);
-      const grace = Math.max(120000, Math.min(Number(b.grace) || 3600000, 24 * 3600000));
+      const grace = Math.max(120000, Math.min(Number(b.grace) || 300000, 24 * 3600000));
       const at = Number(b.at) || Date.now();
       const lost = Number(b.lost) || 0;
       await env.PUSH_KV.put('k:' + k, JSON.stringify({ at, grace, plan, lost }), { expirationTtl: 60 * 60 * 4 });
@@ -260,11 +260,11 @@ async function runDue(env) {
       if (merged) {
         plan = merged.plan || [];
         alive = Number(merged.at) || 0;
-        grace = Number(merged.grace) || 3600000;
+        grace = Number(merged.grace) || 300000;
       } else {
         plan = await getJSON(env.PUSH_KV, 'p:' + k, []);
         alive = Number(await env.PUSH_KV.get('a:' + k)) || 0;
-        grace = Number(await env.PUSH_KV.get('g:' + k)) || 3600000;
+        grace = Number(await env.PUSH_KV.get('g:' + k)) || 300000;
       }
       if (!plan.length) continue;
 
