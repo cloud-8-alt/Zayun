@@ -4236,6 +4236,11 @@ body{
             if (s >= 60) stopVoiceRecord(true);
         }, 500);
     }
+    function vrIsIOS() {
+        var ua = navigator.userAgent || '';
+        if (/iPad|iPhone|iPod/.test(ua)) return true;
+        return !!(navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    }
     function vrStartASR() {
         var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
         if (!SR) return;
@@ -4267,6 +4272,7 @@ body{
         }
         vrState.chunks = []; vrState.text = ''; vrState.interim = '';
         vrSetCancel(false);
+        if (!window.isSecureContext) { showToast('请用 https 打开才能录音'); return; }
         navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 } }).then(function(stream) {
             vrState.stream = stream;
             var mt = '';
@@ -4287,7 +4293,8 @@ body{
             if (btn) btn.classList.add('recording');
             vrShow(true);
             vrTick();
-            vrStartASR();
+            // iOS 上用语音识别会抢占麦克风，导致录音无声，因此 iOS 只录音不转写
+            if (!vrIsIOS()) vrStartASR();
         }).catch(function() {
             vrState.active = false;
             vrShow(false);
