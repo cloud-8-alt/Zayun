@@ -1099,9 +1099,10 @@ body{
 .footer-btn.voice-btn.recording svg{animation:voicePulse 1s ease-in-out infinite;}
 @keyframes voicePulse{0%,100%{opacity:1;transform:scale(1);}50%{opacity:.45;transform:scale(0.92);}}
 /* 录音浮层 */
-.voice-record-mask{position:fixed;inset:0;z-index:9500;background:rgba(0,0,0,0.28);display:none;align-items:center;justify-content:center;}
+.voice-record-mask{position:fixed;inset:0;z-index:9500;background:rgba(0,0,0,0.28);display:none;align-items:center;justify-content:center;pointer-events:none;}
 .voice-record-mask.show{display:flex;}
-.voice-record-box{min-width:150px;padding:18px 22px;border-radius:18px;background:rgba(40,40,40,0.92);color:#fff;text-align:center;font-size:14px;}
+.voice-record-box{min-width:150px;padding:18px 22px;border-radius:18px;background:rgba(40,40,40,0.92);color:#fff;text-align:center;font-size:14px;pointer-events:none;}
+.vr-cancel-btn{margin:14px auto 0;padding:7px 20px;border-radius:16px;background:rgba(255,255,255,0.16);color:#fff;font-size:13px;pointer-events:auto;}
 .voice-record-box .vr-time{font-size:22px;font-weight:600;margin:8px 0 4px;letter-spacing:1px;}
 .voice-record-box .vr-tip{font-size:12px;opacity:.75;}
 .voice-record-box.cancel{background:rgba(180,60,60,0.95);}
@@ -1719,6 +1720,7 @@ body{
         <div style="font-size:13px;">正在录音…</div>
         <div class="vr-time" id="voiceRecordTime">0:00</div>
         <div class="vr-tip" id="voiceRecordTip">松开发送，上滑取消</div>
+        <div class="vr-cancel-btn" id="voiceCancelBtn">取消</div>
     </div>
 </div>
 
@@ -4213,6 +4215,7 @@ body{
 
     // ====== 按住说话：录制真实语音 + 自动转文字 ======
     var vrState = { rec: null, stream: null, chunks: [], startedAt: 0, timer: null, text: '', interim: '', sr: null, cancel: false, active: false };
+    var vrReleaseCleanup = null;
 
     function vrSetCancel(c) {
         vrState.cancel = c;
@@ -4273,7 +4276,15 @@ body{
         vrState.chunks = []; vrState.text = ''; vrState.interim = '';
         vrSetCancel(false);
         if (!window.isSecureContext) { showToast('请用 https 打开才能录音'); return; }
+        vrState.pendingStart = true;
         navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 } }).then(function(stream) {
+            vrState.pendingStart = false;
+            if (vrState.pendingRelease) {
+                vrState.pendingRelease = false;
+                try { stream.getTracks().forEach(function(t) { t.stop(); }); } catch(e) {}
+                vrShow(false);
+                return;
+            }
             vrState.stream = stream;
             var mt = '';
             try {
@@ -4340,23 +4351,63 @@ body{
         btn.addEventListener('contextmenu', function(e) { e.preventDefault(); });
         btn.addEventListener('pointerdown', function(e) {
             e.preventDefault();
-            try { btn.setPointerCapture(e.pointerId); } catch(err) {}
             startVoiceRecord();
+            var startY = e.clientY;
+            var finished = false;
+            function onMove(ev) {
+                if (!vrState.active) return;
+                var y = ev.clientY !== undefined ? ev.clientY : (ev.touches && ev.touches[0] ? ev.touches[0].clientY : startY);
+                vrSetCancel((startY - y) > 60);
+            }
+            function onEnd(ev) {
+                if (finished) return;
+                finished = true;
+                cleanup();
+                vrReleaseCleanup = null;
+                if (!vrState.active) {
+                    if (vrState.pendingStart) vrState.pendingRelease = true;
+                    vrShow(false);
+                    return;
+                }
+                stopVoiceRecord(!vrState.cancel);
+            }
+            function onCancel() {
+                if (finished) return;
+                finished = true;
+                cleanup();
+                vrReleaseCleanup = null;
+                if (!vrState.active) {
+                    if (vrState.pendingStart) vrState.pendingRelease = true;
+                    vrShow(false);
+                    return;
+                }
+                vrState.cancel = true;
+                stopVoiceRecord(false);
+            }
+            function cleanup() {
+                window.removeEventListener('pointermove', onMove, true);
+                window.removeEventListener('pointerup', onEnd, true);
+                window.removeEventListener('touchend', onEnd, true);
+                window.removeEventListener('pointercancel', onCancel, true);
+                window.removeEventListener('touchcancel', onCancel, true);
+                window.removeEventListener('blur', onCancel, true);
+            }
+            window.addEventListener('pointermove', onMove, true);
+            window.addEventListener('pointerup', onEnd, true);
+            window.addEventListener('touchend', onEnd, true);
+            window.addEventListener('pointercancel', onCancel, true);
+            window.addEventListener('touchcancel', onCancel, true);
+            window.addEventListener('blur', onCancel, true);
+            vrReleaseCleanup = cleanup;
         });
-        btn.addEventListener('pointermove', function(e) {
-            if (!vrState.active) return;
-            var top = btn.getBoundingClientRect().top;
-            vrSetCancel((e.clientY - top) < -60);
-        });
-        btn.addEventListener('pointerup', function(e) {
-            e.preventDefault();
-            var send = !vrState.cancel;
-            stopVoiceRecord(send);
-        });
-        btn.addEventListener('pointercancel', function() {
-            vrState.cancel = true;
-            stopVoiceRecord(false);
-        });
+        if ($('voiceCancelBtn')) {
+            $('voiceCancelBtn').addEventListener('pointerdown', function(e) {
+                e.preventDefault(); e.stopPropagation();
+                vrState.cancel = true;
+                if (vrReleaseCleanup) { vrReleaseCleanup(); vrReleaseCleanup = null; }
+                stopVoiceRecord(false);
+            });
+        }
     }
 
     // ====== 消息发送 ======
