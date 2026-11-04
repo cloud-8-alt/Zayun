@@ -376,8 +376,9 @@ body{
     backdrop-filter:blur(6px);
 }
 .msg-input:focus{
-    border-color:var(--primary-pink);
-    box-shadow:0 0 0 3px rgba(255,182,193,0.12);
+    border-color:#222;
+    box-shadow:0 0 0 3px rgba(0,0,0,0.06);
+    caret-color:#222;
 }
 .msg-input::placeholder{color:var(--text-light);}
 .footer-btn{
@@ -1088,9 +1089,22 @@ body{
 .zayu-seg button{flex:1;border:none;background:none;padding:7px;border-radius:9px;font-size:12px;color:#888;cursor:pointer;}
 .zayu-seg button.active{background:#fff;color:#333;font-weight:600;box-shadow:0 1px 4px rgba(0,0,0,0.06);}
 /* 输入栏表情包按钮 */
-.footer-btn.sticker-btn svg{width:21px;height:21px;color:var(--primary-pink);display:block;}
-/* 输入栏批量发送按钮：与表情包图标同色同大小 */
-.footer-btn.batch-send-btn{font-size:21px;line-height:1;color:var(--primary-pink);padding:4px 6px;}
+.footer-btn.sticker-btn svg{width:22px;height:22px;color:#1c1c1c;stroke:#1c1c1c;display:block;}
+/* 输入栏批量发送按钮：黑色加号 */
+.footer-btn.batch-send-btn{padding:4px 5px;color:#1c1c1c;}
+.footer-btn.batch-send-btn svg{width:22px;height:22px;color:#1c1c1c;stroke:#1c1c1c;display:block;}
+/* 输入栏语音按钮 */
+.footer-btn.voice-btn{padding:4px 5px;color:#1c1c1c;touch-action:none;}
+.footer-btn.voice-btn svg{width:22px;height:22px;color:#1c1c1c;stroke:#1c1c1c;display:block;}
+.footer-btn.voice-btn.recording svg{animation:voicePulse 1s ease-in-out infinite;}
+@keyframes voicePulse{0%,100%{opacity:1;transform:scale(1);}50%{opacity:.45;transform:scale(0.92);}}
+/* 录音浮层 */
+.voice-record-mask{position:fixed;inset:0;z-index:9500;background:rgba(0,0,0,0.28);display:none;align-items:center;justify-content:center;}
+.voice-record-mask.show{display:flex;}
+.voice-record-box{min-width:150px;padding:18px 22px;border-radius:18px;background:rgba(40,40,40,0.92);color:#fff;text-align:center;font-size:14px;}
+.voice-record-box .vr-time{font-size:22px;font-weight:600;margin:8px 0 4px;letter-spacing:1px;}
+.voice-record-box .vr-tip{font-size:12px;opacity:.75;}
+.voice-record-box.cancel{background:rgba(180,60,60,0.95);}
 /* 表情包面板 */
 .sticker-panel{
     position:fixed;left:50%;transform:translateX(-50%);bottom:0;
@@ -1686,11 +1700,25 @@ body{
     <div class="chat-body" id="chatBody"></div>
 
     <div class="chat-footer">
+        <button class="footer-btn voice-btn" id="voiceBtn" title="按住说话">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8.6 12.2 11.4 9.7v5z" fill="currentColor" stroke="none"/><path d="M13.4 9.6c1.2 1.2 1.2 3.6 0 4.8"/><path d="M15.6 7.6c2.4 2.4 2.4 6.4 0 8.8"/></svg>
+        </button>
         <input type="text" class="msg-input" id="messageInput" placeholder="输入消息..." autocomplete="off">
         <button class="footer-btn sticker-btn" id="stickerBtn" title="表情包">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
         </button>
-        <button class="footer-btn batch-send-btn" id="batchSendBtn" title="批量发送">♡</button>
+        <button class="footer-btn batch-send-btn" id="batchSendBtn" title="批量发送">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 7.4v9.2"/><path d="M7.4 12h9.2"/></svg>
+        </button>
+    </div>
+</div>
+
+<!-- 录音浮层 -->
+<div class="voice-record-mask" id="voiceRecordMask">
+    <div class="voice-record-box" id="voiceRecordBox">
+        <div style="font-size:13px;">正在录音…</div>
+        <div class="vr-time" id="voiceRecordTime">0:00</div>
+        <div class="vr-tip" id="voiceRecordTip">松开发送，上滑取消</div>
     </div>
 </div>
 
@@ -4183,13 +4211,156 @@ body{
         if (m) m.remove();
     }
 
+    // ====== 按住说话：录制真实语音 + 自动转文字 ======
+    var vrState = { rec: null, stream: null, chunks: [], startedAt: 0, timer: null, text: '', interim: '', sr: null, cancel: false, active: false };
+
+    function vrSetCancel(c) {
+        vrState.cancel = c;
+        var box = $('voiceRecordBox'), tip = $('voiceRecordTip');
+        if (box) box.classList.toggle('cancel', !!c);
+        if (tip) tip.textContent = c ? '松开取消发送' : '松开发送，上滑取消';
+    }
+    function vrShow(show) {
+        var mask = $('voiceRecordMask');
+        if (!mask) return;
+        if (show) { vrSetCancel(false); $('voiceRecordTime').textContent = '0:00'; mask.classList.add('show'); }
+        else mask.classList.remove('show');
+    }
+    function vrTick() {
+        if (vrState.timer) clearInterval(vrState.timer);
+        vrState.timer = setInterval(function() {
+            if (!vrState.active) return;
+            var s = Math.floor((Date.now() - vrState.startedAt) / 1000);
+            var el = $('voiceRecordTime');
+            if (el) el.textContent = Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
+            if (s >= 60) stopVoiceRecord(true);
+        }, 500);
+    }
+    function vrStartASR() {
+        var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SR) return;
+        try {
+            var sr = new SR();
+            sr.lang = 'zh-CN'; sr.continuous = true; sr.interimResults = true;
+            sr.onresult = function(ev) {
+                var fin = '', itm = '';
+                for (var i = ev.resultIndex; i < ev.results.length; i++) {
+                    var r = ev.results[i];
+                    if (r.isFinal) fin += r[0].transcript; else itm += r[0].transcript;
+                }
+                if (fin) vrState.text += fin;
+                vrState.interim = itm;
+            };
+            sr.onerror = function() {};
+            sr.start();
+            vrState.sr = sr;
+        } catch(e) { vrState.sr = null; }
+    }
+    function vrStopASR() {
+        if (vrState.sr) { try { vrState.sr.stop(); } catch(e) {} vrState.sr = null; }
+    }
+    function startVoiceRecord() {
+        if (vrState.active) return;
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
+            showToast('当前环境不支持录音');
+            return;
+        }
+        vrState.chunks = []; vrState.text = ''; vrState.interim = '';
+        vrSetCancel(false);
+        navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 } }).then(function(stream) {
+            vrState.stream = stream;
+            var mt = '';
+            try {
+                ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].forEach(function(t) {
+                    if (!mt && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t)) mt = t;
+                });
+            } catch(e) {}
+            var rec;
+            try { rec = new MediaRecorder(stream, mt ? { mimeType: mt, audioBitsPerSecond: 24000 } : { audioBitsPerSecond: 24000 }); }
+            catch(e) { rec = new MediaRecorder(stream); }
+            vrState.rec = rec;
+            vrState.active = true;
+            vrState.startedAt = Date.now();
+            rec.ondataavailable = function(e) { if (e.data && e.data.size) vrState.chunks.push(e.data); };
+            rec.start();
+            var btn = $('voiceBtn');
+            if (btn) btn.classList.add('recording');
+            vrShow(true);
+            vrTick();
+            vrStartASR();
+        }).catch(function() {
+            vrState.active = false;
+            vrShow(false);
+            showToast('没有麦克风权限，请在系统设置里允许');
+        });
+    }
+    function stopVoiceRecord(send) {
+        if (!vrState.active) return;
+        vrState.active = false;
+        var btn = $('voiceBtn');
+        if (btn) btn.classList.remove('recording');
+        vrShow(false);
+        if (vrState.timer) { clearInterval(vrState.timer); vrState.timer = null; }
+        var dur = Math.round((Date.now() - vrState.startedAt) / 1000);
+        vrStopASR();
+        var rec = vrState.rec;
+        var stream = vrState.stream;
+        function cleanup() {
+            try { if (stream) stream.getTracks().forEach(function(t) { t.stop(); }); } catch(e) {}
+            vrState.stream = null; vrState.rec = null;
+        }
+        if (!rec) { cleanup(); return; }
+        rec.onstop = function() {
+            var mime = rec.mimeType || 'audio/webm';
+            cleanup();
+            if (!send || vrState.cancel) { vrState.chunks = []; return; }
+            if (dur < 1) { vrState.chunks = []; showToast('说话时间太短'); return; }
+            var blob = new Blob(vrState.chunks, { type: mime });
+            vrState.chunks = [];
+            if (blob.size < 200) { showToast('没有录到声音'); return; }
+            var fr = new FileReader();
+            fr.onload = function() {
+                var text = (vrState.text || '').trim();
+                sendMessage(text, false, 'voice', null, false, null, false, { audioUrl: fr.result, text: text, duration: dur });
+            };
+            fr.readAsDataURL(blob);
+        };
+        try { rec.stop(); } catch(e) { cleanup(); }
+    }
+    function initVoiceRecorder() {
+        var btn = $('voiceBtn');
+        if (!btn) return;
+        btn.addEventListener('contextmenu', function(e) { e.preventDefault(); });
+        btn.addEventListener('pointerdown', function(e) {
+            e.preventDefault();
+            try { btn.setPointerCapture(e.pointerId); } catch(err) {}
+            startVoiceRecord();
+        });
+        btn.addEventListener('pointermove', function(e) {
+            if (!vrState.active) return;
+            var top = btn.getBoundingClientRect().top;
+            vrSetCancel((e.clientY - top) < -60);
+        });
+        btn.addEventListener('pointerup', function(e) {
+            e.preventDefault();
+            var send = !vrState.cancel;
+            stopVoiceRecord(send);
+        });
+        btn.addEventListener('pointercancel', function() {
+            vrState.cancel = true;
+            stopVoiceRecord(false);
+        });
+    }
+
     // ====== 消息发送 ======
-    function sendMessage(content, isPartner, type, imageBase64, skipReply, quoteId, isProactive) {
+    function sendMessage(content, isPartner, type, imageBase64, skipReply, quoteId, isProactive, voiceData) {
         type = type || 'text';
         var replyIdToUse = quoteId || (isPartner ? null : pendingReplyId);
         var newMsg;
         if (type === 'image') {
             newMsg = { id: msgId++, type: 'image', text: imageBase64, isPartner: isPartner, time: Date.now(), read: isPartner, replyId: replyIdToUse || null };
+        } else if (type === 'voice') {
+            newMsg = { id: msgId++, type: 'voice', text: content, isPartner: isPartner, time: Date.now(), read: isPartner, replyId: replyIdToUse || null, voice: voiceData || null };
         } else if (type === 'batch') {
             newMsg = { id: msgId++, type: 'batch', text: imageBase64, isPartner: isPartner, time: Date.now(), read: isPartner, replyId: replyIdToUse || null };
         } else if (type === 'sticker') {
@@ -7592,6 +7763,7 @@ body{
         });
 
         DOM.batchSendBtn.addEventListener('click', openBatchPanel);
+        initVoiceRecorder();
         DOM.batchCloseBtn.addEventListener('click', closeBatchPanel);
         DOM.batchAddBtn.addEventListener('click', function() {
             var t = DOM.batchAddInput.value.trim();
@@ -8381,6 +8553,7 @@ body{
     var mvImporting = false;
     var mvImportStartedAt = 0;
     var mvPlayingListId = null;
+    var musicTogether = false;      // 是否已接受/正在进行一起听歌（有悬浮球即视为进行中）
     var mvLocalSongs = [];   // 本地音乐：[{id,key,name,artist,isLocal,url}]
     var mvDB = null;
 
@@ -8844,6 +9017,8 @@ body{
         mvQueue = pl.songs.slice();
         mvPlayingListId = pl.id;
         mvIndex = idx || 0;
+        musicTogether = true;
+        try { localStorage.setItem('zayu_music_together', '1'); } catch(e) {}
         openMusicPlayer();
         loadMvSong();
     }
@@ -8895,6 +9070,13 @@ body{
         var song = mvQueue[mvIndex];
         if (!song) return;
         mvCurrent = song;
+        // 记住「上次听到哪首歌」，下次一起听歌从这里接着播
+        try {
+            if (mvPlayingListId != null) {
+                localStorage.setItem('zayu_mv_last_list', String(mvPlayingListId));
+                localStorage.setItem('zayu_mv_last_index', String(mvIndex));
+            }
+        } catch(e) {}
         mvLyrics = [];
         $('mvpTitle').textContent = song.name || '未知歌曲';
         $('mvpArtist').textContent = song.artist || '';
@@ -9005,6 +9187,8 @@ body{
         $('musicPlayerPage').classList.remove('show');
         hideMusicBall();
         $('mvpPlayBtn').textContent = '▶';
+        musicTogether = false;
+        try { localStorage.removeItem('zayu_music_together'); } catch(e) {}
     }
 
     function cycleMusicMode() {
@@ -9051,6 +9235,9 @@ body{
         // 已经在听歌：只要音乐悬浮球在页面上（暂停或播放都算），就不再发邀请
         var _mb = $('musicBall');
         if (_mb && _mb.classList.contains('show')) return;
+        var _mp = $('musicPlayerPage');
+        if (_mp && _mp.classList.contains('show')) return;
+        if (musicTogether) return;
         musicPendingInvite = { at: Date.now() };
         addSystemMessage(partnerInfo.name + ' 邀请你一起听歌，快去音乐里看看吧～');
         AndroidBridge.notifyMessage(partnerInfo.name + ' 邀请你一起听歌');
@@ -9062,11 +9249,24 @@ body{
         musicPendingInvite = null;
         saveExtImmediate();
         renderMusic();
+        // 接着上次听到的歌继续，不每次都从头开始
+        var lastId = null, lastIdx = 0;
+        try {
+            lastId = localStorage.getItem('zayu_mv_last_list');
+            lastIdx = parseInt(localStorage.getItem('zayu_mv_last_index') || '0', 10) || 0;
+        } catch(e) {}
         var target = null;
-        musicPlaylists.forEach(function(p) { if (!target && p.songs && p.songs.length) target = p; });
+        if (lastId != null) {
+            var lp = mvGetPlaylist(lastId);
+            if (lp && lp.songs && lp.songs.length) {
+                target = lp;
+                if (lastIdx >= lp.songs.length || lastIdx < 0) lastIdx = 0;
+            }
+        }
+        if (!target) musicPlaylists.forEach(function(p) { if (!target && p.songs && p.songs.length) target = p; });
         if (!target && mvLocalSongs.length) target = { id: '__local__' };
         if (!target) { showToast('先导入一个歌单或本地音乐吧'); return; }
-        playMusicPlaylist(target.id, 0);
+        playMusicPlaylist(target.id, lastIdx);
     }
 
     function rejectMusicInvite() {
