@@ -2738,13 +2738,14 @@ body{
                 }
             }).catch(function () {});
         },
-        // 页面多久没有心跳算「已关闭」：默认 5 分钟（划掉应用后很快彻底安静）；
-        // 音频被抖音/视频抢走时会临时放宽到 3 小时（见 KeepAlive 的 pause 处理）
-        graceMs: function () { return this._graceOverride || 5 * 60000; },
+        // 页面多久没有心跳算「已关闭」：默认 60 分钟。
+        // 页面被冻结（刷抖音/看视频）时由云端继续兜底，不会因为几分钟没心跳就断掉；
+        // 真正从任务栏划掉时，pagehide 会立刻发 /closed 清空，所以不会再收到消息。
+        graceMs: function () { return this._graceOverride || 60 * 60000; },
         // 放宽/收紧「多久没心跳算已关闭」，下一次 beat 会一起带上
         setGrace: function (ms) {
             var self = this;
-            var def = 5 * 60000;
+            var def = 60 * 60000;
             self._graceOverride = (Number(ms) > def) ? Number(ms) : 0;
             self.beat(true);
         },

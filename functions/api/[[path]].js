@@ -120,7 +120,18 @@ export async function onRequest(context) {
     if (path === '/ping' && request.method === 'POST') {
       const b = await request.json();
       if (!b.endpoint) return json({ error: 'endpoint required' }, 400);
-      const status = await sendPush(env, b.endpoint);
+      let status;
+      try {
+        status = await sendPush(env, b.endpoint);
+      } catch (e) {
+        // 本项目的 VAPID 私钥保存在 Worker 里，Pages 侧没有密钥时转发给 Worker 发送
+        const r = await fetch('https://zayu-push.642385319.workers.dev/ping', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ endpoint: b.endpoint })
+        });
+        return json({ ok: r.ok, via: 'worker', status: r.status });
+      }
       return json({ ok: status >= 200 && status < 300, status });
     }
 
@@ -130,9 +141,10 @@ export async function onRequest(context) {
       if (!b.endpoint) return json({ error: 'endpoint required' }, 400);
       const k = await keyOf(b.endpoint);
       const plan = (b.plan || []).filter((i) => i && i.at).slice(0, 300);
-      const grace = Math.max(120000, Math.min(Number(b.grace) || 300000, 24 * 3600000));
+      const grace = Math.max(120000, Math.min(Number(b.grace) || 3600000, 24 * 3600000));
       const at = Number(b.at) || Date.now();
-      await env.PUSH_KV.put('k:' + k, JSON.stringify({ at, grace, plan }), { expirationTtl: 60 * 60 * 4 });
+      const lost = Number(b.lost) || 0;
+      await env.PUSH_KV.put('k:' + k, JSON.stringify({ at, grace, plan, lost }), { expirationTtl: 60 * 60 * 4 });
       return json({ ok: true, count: plan.length, at, grace });
     }
 
@@ -166,6 +178,21 @@ export async function onRequest(context) {
       const prev = await env.PUSH_KV.get('g:' + k);
       if (prev !== g) await env.PUSH_KV.put('g:' + k, g, { expirationTtl: 60 * 60 * 24 * 30 });
       return json({ ok: true, grace: Number(g) });
+    }
+
+    // 页面被划掉/关闭时由客户端 beacon 调用：立刻清空，停止一切兜底推送
+    if (path === '/closed' && request.method === 'POST') {
+      const ep = url.searchParams.get('endpoint');
+      if (!ep) return json({ error: 'endpoint required' }, 400);
+      const k = await keyOf(ep);
+      await Promise.all([
+        env.PUSH_KV.delete('k:' + k),
+        env.PUSH_KV.delete('p:' + k),
+        env.PUSH_KV.delete('a:' + k),
+        env.PUSH_KV.delete('g:' + k),
+        env.PUSH_KV.delete('d:' + k),
+      ]);
+      return json({ ok: true });
     }
 
     if (path === '/pending' && request.method === 'GET') {
@@ -233,11 +260,11 @@ async function runDue(env) {
       if (merged) {
         plan = merged.plan || [];
         alive = Number(merged.at) || 0;
-        grace = Number(merged.grace) || 300000;
+        grace = Number(merged.grace) || 3600000;
       } else {
         plan = await getJSON(env.PUSH_KV, 'p:' + k, []);
         alive = Number(await env.PUSH_KV.get('a:' + k)) || 0;
-        grace = Number(await env.PUSH_KV.get('g:' + k)) || 300000;
+        grace = Number(await env.PUSH_KV.get('g:' + k)) || 3600000;
       }
       if (!plan.length) continue;
 
