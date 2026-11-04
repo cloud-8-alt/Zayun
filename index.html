@@ -2939,6 +2939,10 @@ body{
         return /Macintosh/.test(ua) && ('ontouchend' in document);
     }
 
+    function isAndroidWeb() {
+        return /Android/i.test(navigator.userAgent || '');
+    }
+
     // ====== 后台保活（近无声音频，防冻结）======
     var KeepAlive = {
         audio: null, url: null, since: 0, hideAt: 0, lastAlive: 0, maxAlive: 0, terminations: 0,
@@ -2961,6 +2965,9 @@ body{
         },
         make: function () {
             if (this.audio) return this.audio;
+            // 安卓上持续播放静音音频会抢走系统音频焦点，导致抖音/视频一刷就被暂停。
+            // 安卓改用云端推送兜底，这里直接不启动保活音频。
+            if (isAndroidWeb()) return null;
             var self = this;
             try {
                 var a = new Audio();
