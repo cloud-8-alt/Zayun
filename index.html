@@ -2946,7 +2946,7 @@ body{
     // ====== 后台保活（近无声音频，防冻结）======
     var KeepAlive = {
         audio: null, url: null, since: 0, hideAt: 0, lastAlive: 0, maxAlive: 0, terminations: 0,
-        _lastBeat: 0, unlocked: false,
+        _lastBeat: 0, unlocked: false, interrupted: false,
         wav: function () {
             if (this.url) return this.url;
             try {
@@ -2992,13 +2992,10 @@ body{
                     a.volume = notifyCfg.quietChannel ? 0.0001 : 0.03;
                 }
                 a.addEventListener('pause', function () {
-                    if (!notifyCfg.keepAlive || self._stopping || self.userPaused) return;
-                    // 注意：这里不再放宽云端判定窗口。
-                    // 「刷抖音被抢音频」和「从任务栏划掉」在 iOS 上表现完全一样（都是心跳中断），
-                    // 一旦放宽就无法在划掉后及时安静，所以统一按默认 5 分钟收敛
-                    setTimeout(function () {
-                        if (notifyCfg.keepAlive && !self._stopping && !self.userPaused && self.audio && self.audio.paused) self.start();
-                    }, 600);
+                    // 被其它 App（抖音/视频/通话）抢走音频时，不再自动抢回来，
+                    // 否则会形成「我们抢回→抖音被暂停→抖音抢回→我们被暂停」的死循环，
+                    // 表现为刷抖音几秒就暂停。这里改为：等用户回到页面/再次触摸时再恢复。
+                    self.interrupted = true;
                 });
                 this.audio = a;
                 this.setupMedia();
@@ -3165,9 +3162,11 @@ body{
             try {
                 if (document.hidden) {
                     KeepAlive.hideAt = Date.now();
+                    KeepAlive.interrupted = false;
                     if (notifyCfg.keepAlive) KeepAlive.start();
                 } else {
                     KeepAlive.hideAt = 0;
+                    KeepAlive.interrupted = false;
                     KeepAlive.start();
                     WakeLock.request();
                     if (typeof proactiveTick === 'function') proactiveTick();
@@ -3176,10 +3175,10 @@ body{
             } catch (e) {}
         });
 
-        // 看门狗：后台音频被系统中断时自动重连，并把 SW 叫醒
+        // 看门狗：后台音频被系统中断时自动重连；但被其它 App 抢走后先不抢回，等回到页面再恢复
         setInterval(function () {
             try {
-                if (notifyCfg.keepAlive && !KeepAlive.running()) KeepAlive.start();
+                if (notifyCfg.keepAlive && !KeepAlive.running() && !KeepAlive.interrupted) KeepAlive.start();
                 if (swReady && swReady.active) swReady.active.postMessage({ type: 'heartbeat' });
             } catch (e) {}
         }, 10000);
