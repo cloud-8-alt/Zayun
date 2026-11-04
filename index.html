@@ -2578,7 +2578,8 @@ body{
     var PUSH_PLAN_MIN = 180;   // 预排程覆盖未来 3 小时（刷抖音/长时间不打开也不断）
     var PUSH_PLAN_STEP = 2;    // 冻结时每 2 分钟一条（配合 2 分钟一次的定时任务，实际 2-4 分钟到达）
     var resumeQuietUntil = 0; // 回到页面的静默期：避免积压的回复一次性弹一堆通知
-    var resumeQuietShown = false; // 静默期内只放行第一条通知，其余只入库
+    var resumeQuietShown = false; // 静默期内已放过一条
+    var resumeQuietCount = 0; // 静默期内被暂缓的条数，用于汇总提示
 
     // 申请持久化存储：降低系统/浏览器在空间紧张时把本站存档清掉的风险
     try {
@@ -2856,9 +2857,15 @@ body{
                     return;
                 }
                 if (self._hiddenAt) {
-                    if (Date.now() - self._hiddenAt > 45000) {
-                        resumeQuietUntil = Date.now() + 30000;
+                    // 只要不是立刻切回，就开启合并提示：积压消息不再逐条弹，结束后汇总一条
+                    if (Date.now() - self._hiddenAt > 10000) {
+                        resumeQuietUntil = Date.now() + 6000;
                         resumeQuietShown = false;
+                        resumeQuietCount = 0;
+                        setTimeout(function () {
+                            if (resumeQuietCount > 1) notifyPartnerMessage('你有 ' + resumeQuietCount + ' 条新消息');
+                            resumeQuietCount = 0;
+                        }, 6500);
                     }
                     self._hiddenAt = 0;
                 }
@@ -2882,8 +2889,11 @@ body{
             }
             // 浏览器通知（横幅 + 系统通知，同一条消息只走一次）
             if (Date.now() < resumeQuietUntil) {
-                // 刚回到页面：只放行第一条，避免攒着的一堆通知一次性炸开
-                if (resumeQuietShown) return;
+                // 刚回到页面：第一条照常弹，其余的攒起来，静默结束后合成一条汇总
+                if (resumeQuietShown) {
+                    resumeQuietCount++;
+                    return;
+                }
                 resumeQuietShown = true;
             }
             notifyPartnerMessage(String(text || ''));
@@ -8503,6 +8513,14 @@ body{
         });
 
         // 页面卸载前保存
+        window.addEventListener('pagehide', function () {
+            // 真正离开（划掉/关闭页面）时通知服务器立刻清空，避免划掉后还继续推送
+            try {
+                if (CloudPush && CloudPush.endpoint && navigator.sendBeacon) {
+                    navigator.sendBeacon('/api/closed?endpoint=' + encodeURIComponent(CloudPush.endpoint), '');
+                }
+            } catch (e) {}
+        });
         window.addEventListener('beforeunload', function() {
             if (replyTimer) clearTimeout(replyTimer);
             if (callTimerInterval) clearInterval(callTimerInterval);
