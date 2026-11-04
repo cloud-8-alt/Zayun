@@ -2999,19 +2999,9 @@ body{
                     a.volume = notifyCfg.quietChannel ? 0.0001 : 0.03;
                 }
                 a.addEventListener('pause', function () {
-                    // 被其它 App（抖音/视频/通话）抢走音频后，延迟 2 秒再抢回来。
-                    // 这段时间内页面必须保持运行，否则会收不到通知；
-                    // 抖音被短暂压低音量/暂停是代价，但消息通知优先级更高。
-                    if (!notifyCfg.keepAlive || self._stopping || self.userPaused) return;
+                    // 被其它 App 抢走音频后不再抢回：抢回会导致「我们抢回→抖音暂停→抖音抢回」
+                    // 死循环，表现为刷抖音一直被暂停。页面冻结期间的通知交给云端兜底。
                     self.interrupted = true;
-                    setTimeout(function () {
-                        if (!notifyCfg.keepAlive || self._stopping || self.userPaused) return;
-                        if (!document.hidden) return;
-                        if (self.audio && self.audio.paused) {
-                            self.interrupted = false;
-                            self.start();
-                        }
-                    }, 2000);
                 });
                 this.audio = a;
                 this.setupMedia();
@@ -8519,6 +8509,15 @@ body{
         });
 
         // 页面卸载前保存
+        window.addEventListener('pagehide', function () {
+            // 只有真正被卸载（从任务栏划掉 / 关闭标签）才会触发 pagehide，
+            // 切到抖音不会触发。用它告诉服务器立刻停止推送，不再有「划掉后还来消息」
+            try {
+                if (CloudPush && CloudPush.endpoint && navigator.sendBeacon) {
+                    navigator.sendBeacon('/api/closed?endpoint=' + encodeURIComponent(CloudPush.endpoint), '');
+                }
+            } catch (e) {}
+        });
         window.addEventListener('beforeunload', function() {
             if (replyTimer) clearTimeout(replyTimer);
             if (callTimerInterval) clearInterval(callTimerInterval);
